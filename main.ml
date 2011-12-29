@@ -607,6 +607,9 @@ try
 		("-cpp",Arg.String (fun dir ->
 			set_platform Cpp dir;
 		),"<directory> : generate C++ code into target directory");
+		("-cs",Arg.String (fun dir ->
+			set_platform Cs dir;
+		),"<directory> : generate CSharp code into target directory");
 		("-xml",Arg.String (fun file ->
 			Parser.use_doc := true;
 			xml_out := Some file
@@ -814,6 +817,7 @@ try
 		| Js -> add_std "js"; "js"
 		| Php -> add_std "php"; "php"
 		| Cpp -> add_std "cpp"; "cpp"
+		| Cs -> add_std "cs"; "cs"
 	) in
 	(* if we are at the last compilation step, allow all packages accesses - in case of macros or opening another project file *)
 	if com.display && not ctx.has_next then com.package_rules <- PMap.foldi (fun p r acc -> match r with Forbidden -> acc | _ -> PMap.add p r acc) com.package_rules PMap.empty;
@@ -855,7 +859,7 @@ try
 		| Some file ->
 			Common.log com ("Generating xml : " ^ com.file);
 			Genxml.generate com file);
-		if com.platform = Flash9 || com.platform = Cpp then List.iter (Codegen.fix_overrides com) com.types;
+		if com.platform = Flash9 || com.platform = Cpp || com.platform = Cs then List.iter (Codegen.fix_overrides com) com.types;
 		if Common.defined com "dump" then Codegen.dump_types com;
 		t();
 		(match com.platform with
@@ -887,6 +891,9 @@ try
 		| Cpp ->
 			Common.log com ("Generating Cpp in : " ^ com.file);
 			Gencpp.generate com;
+		| Cs ->
+			if com.verbose then print_endline ("Generating Cs in : " ^ com.file);
+			Gencs.generate com;
 		);
 	end;
 	if not !no_output then List.iter (fun cmd ->
