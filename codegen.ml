@@ -773,6 +773,8 @@ let captured_vars com e =
 		out_loop e
 	| Js ->
 		out_loop e
+	| Cs ->
+		out_loop e
 
 (* -------------------------------------------------------------------------- *)
 (* RENAME LOCAL VARS *)
