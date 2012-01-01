@@ -871,8 +871,8 @@ let generate_field ctx static f =
 		else
 		if is_getset then begin
 			print ctx "%s %s %s {" rights (type_str ctx f.cf_type p) (s_ident f.cf_name);
-			let b = open_block ctx;
 			newline ctx;
+			let b = open_block ctx in
 			let id = s_ident f.cf_name in
 			let v = (match f.cf_kind with Var v -> v | _ -> assert false) in
 			(match v.v_read with
@@ -893,11 +893,6 @@ let generate_field ctx static f =
 			b();
 			newline ctx;
 			print ctx "}";
-			match f.cf_expr with
-			| None -> ()
-			| Some e ->
-				print ctx " = ";
-				gen_value ctx e
 		end else begin
 			print ctx "%s %s %s" rights (type_str ctx f.cf_type p) (s_ident f.cf_name);
 			match f.cf_expr with
