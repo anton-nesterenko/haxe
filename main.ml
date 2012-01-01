@@ -411,7 +411,7 @@ and wait_loop com host port =
 
 and init flush ctx =
 	let usage = Printf.sprintf
-		"haXe Compiler %d.%.2d - (c)2005-2011 Motion-Twin\n Usage : haxe%s -main <class> [-swf|-js|-neko|-php|-cpp|-as3] <output> [options]\n Options :"
+		"haXe Compiler %d.%.2d - (c)2005-2011 Motion-Twin\n Usage : haxe%s -main <class> [-swf|-js|-neko|-php|-cpp|-cs|-as3] <output> [options]\n Options :"
 		(version / 100) (version mod 100) (if Sys.os_type = "Win32" then ".exe" else "")
 	in
 	let com = ctx.com in
@@ -488,7 +488,7 @@ try
 		),"<directory> : generate C++ code into target directory");
 		("-cs",Arg.String (fun dir ->
 			set_platform Cs dir;
-		),"<directory> : generate CSharp code into target directory");
+		),"<directory> : generate C# code into target directory");
 		("-xml",Arg.String (fun file ->
 			Parser.use_doc := true;
 			xml_out := Some file
