@@ -608,6 +608,7 @@ try
 			set_platform Cpp dir;
 		),"<directory> : generate C++ code into target directory");
 		("-cs",Arg.String (fun dir ->
+			classes := (["cs"],"Boot") :: !classes;
 			set_platform Cs dir;
 		),"<directory> : generate C# code into target directory");
 		("-xml",Arg.String (fun file ->

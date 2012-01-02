@@ -28,6 +28,7 @@ type context = {
 	ch : out_channel;
 	buf : Buffer.t;
 	path : path;
+	mutable root_ns : string;
 	mutable get_sets : (string * bool,string) Hashtbl.t;
 	mutable curclass : tclass;
 	mutable tabs : string;
@@ -55,7 +56,8 @@ let s_path ctx stat path p =
 		| "Dynamic" -> "dynamic"
 		| "Bool" -> "bool"
 		| "Enum" -> "object"
-		| _ -> name)
+		| "Array" -> "List<object>"
+		| _ -> ctx.root_ns ^ "." ^ name)
 	| (["haxe"],"Int32") when not stat ->
 		"int"
 	| (pack,name) ->
@@ -68,18 +70,37 @@ let reserved =
 	let h = Hashtbl.create 0 in
 	List.iter (fun l -> Hashtbl.add h l ())
 	(* these ones are defined in order to prevent recursion in some Std functions *)
-	["is";"as";"int";"uint";"const";"getTimer";"typeof";"parseInt";"parseFloat";
-	(* AS3 keywords which are not haXe ones *)
-	"each";"label";"finally";"with";"final";"internal";"native";"const";"namespace";"include";"delete";
-	(* some globals give some errors with Flex SDK as well *)
-	"print";
+	["is";"as";"int";"uint";"byte";"sbyte";"short";"ushort";"long";"ulong";"float";"double";"decimal";"const";"getTimer";"typeof";"parseInt";"parseFloat";
+	(* C# keywords which are not haXe ones *)
+	"each";"label";"finally";"with";"sealed";"internal";"const";"namespace";
 	(* we don't include get+set since they are not 'real' keywords, but they can't be used as method names *)
 	];
 	h
 
+(* List of default namespaces to be included in every module *)
+let default_namespaces = [
+	(["System"],"*");
+	(["System";"Collections"],"*");
+	(["System";"Collections";"Generic"],"*");
+	]
+
+(* Get a non-keyword identifier *)
 let s_ident n =
 	if Hashtbl.mem reserved n then "_" ^ n else n
 
+(* Gets module path, replacing empty path with ctx.root_ns *)
+let get_namespace ctx path =
+	match path with
+	| ([], _) -> ([ctx.root_ns], (snd path)) (* Use the default root path *)
+	| _ -> path
+
+(* Gets type path string minus the class, if no ns path, use default ctx.root_ns *)
+let cs_s_type_path ctx (p,s) = 
+	match p with 
+	| [] -> ctx.root_ns 
+	| _ -> String.concat "." p	
+
+(* Start writing a module where path is the module path in pkg, name format *)
 let init infos path =
 	let rec create acc = function
 		| [] -> ()
@@ -98,6 +119,7 @@ let init infos path =
 		tabs = "";
 		ch = ch;
 		path = path;
+		root_ns = "Program";
 		buf = Buffer.create (1 lsl 14);
 		in_value = None;
 		in_static = false;
@@ -109,13 +131,17 @@ let init infos path =
 		get_sets = Hashtbl.create 0;
 		constructor_block = false;
 	}
-
+						
 let close ctx =
-	output_string ctx.ch (Printf.sprintf "namespace %s {\n" (String.concat "." (fst ctx.path)));
+	let ns_path = (get_namespace ctx ctx.path) in
+	output_string ctx.ch (Printf.sprintf "namespace %s {\n" (String.concat "." (fst ns_path)));
+	List.iter (fun path ->
+		output_string ctx.ch ("\tusing " ^ (cs_s_type_path ctx path) ^ ";\n");
+	) default_namespaces;
 	Hashtbl.iter (fun name paths ->
 		List.iter (fun pack ->
 			let path = pack, name in
-			if path <> ctx.path then output_string ctx.ch ("\tusing " ^ Ast.s_type_path path ^ ";\n");
+			if path <> ctx.path then output_string ctx.ch ("\tusing " ^ (cs_s_type_path ctx path) ^ ";\n");
 		) paths
 	) ctx.imports;
 	output_string ctx.ch (Buffer.contents ctx.buf);
@@ -135,8 +161,9 @@ let unsupported p = error "This expression cannot be generated to C#" p
 
 let newline ctx =
 	let rec loop p =
-		match Buffer.nth ctx.buf p with
-		| '}' | '{' | ':' -> print ctx "\n%s" ctx.tabs
+		let ch = (if p >= 0 then (Buffer.nth ctx.buf p) else ';') in
+		match ch with
+		| '}' | '{' | ':' | ';' -> print ctx "\n%s" ctx.tabs
 		| '\n' | '\t' -> loop (p - 1)
 		| _ -> print ctx ";\n%s" ctx.tabs
 	in
@@ -266,7 +293,7 @@ let gen_function_header ctx name f params p =
 	let old_t = ctx.local_types in
 	ctx.in_value <- None;
 	ctx.local_types <- List.map snd params @ ctx.local_types;
-	print ctx "%s " (type_str ctx f.tf_type p);
+	print ctx "%s" (type_str ctx f.tf_type p);
 	print ctx "%s(" (match name with None -> "" | Some (n,meta) ->
 		let rec loop = function
 			| [] -> n
@@ -925,14 +952,19 @@ let generate_class ctx c =
 	define_getset ctx false c;
 	ctx.local_types <- List.map snd c.cl_types;
 	let pack = open_block ctx in
-	print ctx "\tpublic %s%s %s " (match c.cl_dynamic with None -> "" | Some _ -> if c.cl_interface then "" else "dynamic ") (if c.cl_interface then "interface" else "class") (snd c.cl_path);
+	print ctx "\tpublic %s%s %s" (match c.cl_dynamic with None -> "" | Some _ -> if c.cl_interface then "" else "dynamic ") (if c.cl_interface then "interface" else "class") (snd c.cl_path);
+	(match c.cl_super, c.cl_implements with
+	| None, [] -> ()
+	| _ -> print ctx " : ");
 	(match c.cl_super with
 	| None -> ()
-	| Some (csup,_) -> print ctx ": %s " (s_path ctx true csup.cl_path c.cl_pos));
+	| Some (csup,_) -> print ctx "%s " (s_path ctx true csup.cl_path c.cl_pos));
 	(match c.cl_implements with
 	| [] -> ()
 	| l ->
-		spr ctx (if c.cl_interface then "extends " else "implements ");
+		(match c.cl_super with
+		| None -> ()
+		| Some (_,_) -> print ctx ", ");
 		concat ctx ", " (fun (i,_) -> print ctx "%s" (s_path ctx true i.cl_path c.cl_pos)) l);
 	spr ctx "{";
 	let cl = open_block ctx in
@@ -959,16 +991,15 @@ let generate_class ctx c =
 
 let generate_main ctx inits =
 	ctx.curclass <- { null_class with cl_path = [],"__main__" };
-	let pack = open_block ctx in
-	print ctx "\timport cs.Lib";
 	newline ctx;
-	print ctx "public class __main__ extends %s {" (s_path ctx true (["cs"],"Boot") Ast.null_pos);
+	let pack = open_block ctx in
+	print ctx "\tpublic class __main__ : %s {" (s_path ctx true (["cs"],"Boot") Ast.null_pos);
 	let cl = open_block ctx in
 	newline ctx;
-	spr ctx "public function __main__() {";
+	spr ctx "public static void Main() {";
 	let fl = open_block ctx in
 	newline ctx;
-	spr ctx "cs.Lib.current = this";
+	print ctx "%s.current = new __main__()" (s_path ctx true (["cs"],"Lib") Ast.null_pos);
 	List.iter (fun e -> newline ctx; gen_expr ctx e) inits;
 	fl();
 	newline ctx;
@@ -988,9 +1019,9 @@ let generate_enum ctx e =
 	print ctx "\tpublic class %s : HaxeEnum {" ename;
 	let cl = open_block ctx in
 	newline ctx;
-	print ctx "public static const bool __isenum = true";
+	print ctx "public static bool __isenum = true";
 	newline ctx;
-	print ctx "public %s( string t, int i, List<object> p = null ) { this.__tag = t; this.__index = i; this.__params = p; }" ename;
+	print ctx "public %s(string t, int i, List<object> p = null) { this.__tag = t; this.__index = i; this.__params = p; }" ename;
 	PMap.iter (fun _ c ->
 		newline ctx;
 		match c.ef_type with
@@ -1014,7 +1045,7 @@ let generate_enum ctx e =
 		print ctx "public static object __meta__ = ";
 		gen_expr ctx e;
 		newline ctx);
-	print ctx "public static List<object> __constructs__ = new List<object> [%s];" (String.concat "," (List.map (fun s -> "\"" ^ Ast.s_escape s ^ "\"") e.e_names));
+	print ctx "public static List<object> __constructs__ = new List<object> { %s };" (String.concat "," (List.map (fun s -> "\"" ^ Ast.s_escape s ^ "\"") e.e_names));
 	cl();
 	newline ctx;
 	print ctx "}";
@@ -1045,7 +1076,7 @@ let generate com =
 	let infos = {
 		com = com;
 	} in
-	let ctx = init infos ([],"enum") in
+	let ctx = init infos ([],"HaxeEnum") in
 	generate_base_enum ctx;
 	close ctx;
 	let inits = ref [] in
@@ -1053,7 +1084,7 @@ let generate com =
 		match t with
 		| TClassDecl c ->
 			let c = (match c.cl_path with
-				| ["flash"],"FlashXml__" -> { c with cl_path = [],"Xml" }
+				| ["cs"],"CSharpXml__" -> { c with cl_path = [],"Xml" }
 				| (pack,name) -> { c with cl_path = (pack,protect name) }
 			) in
 			(match c.cl_init with
