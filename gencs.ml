@@ -225,7 +225,7 @@ let rec type_str ctx t p =
 			(match args with 
 			| [] -> "Action"
 			| _ -> "Action<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ ">")
-		| _ -> "Func<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ (type_str ctx r p) ^ ">")
+		| _ -> "Func<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ "," ^ (type_str ctx r p) ^ ">")
 	| TMono r ->
 		(match !r with None -> "dynamic" | Some t -> type_str ctx t p)
 	| TAnon _ | TDynamic _ ->
