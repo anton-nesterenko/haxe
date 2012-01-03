@@ -34,7 +34,7 @@ class Lib {
 	static var onerror : String -> Array<String> -> Void;
 
 	public static function trace( str : String ) {
-//		untyped __trace__(str);
+		untyped System.Diagnostics.Debug.WriteLine(str);
 	}
 
 	public static function eval( str : String ) : Dynamic {
@@ -56,8 +56,7 @@ class Lib {
 	}
 
 	public inline static function getTimer() : Int {
-		return 0;
-//		return untyped __gettimer__();
+		return untyped __int__(DateTime.Now.Ticks / 10000);
 	}
 
 	public static function getVersion() : String {

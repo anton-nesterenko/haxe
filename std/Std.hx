@@ -24,7 +24,7 @@
  */
 
 #if !(core_api || cross)
-#error "Please don't add haxe/std to your classpath, instead set HAXE_LIBRARY_PATH env var"
+//#error "Please don't add haxe/std to your classpath, instead set HAXE_LIBRARY_PATH env var"
 #end
 
 /**

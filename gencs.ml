@@ -219,8 +219,13 @@ let rec type_str ctx t p =
 		(match c.cl_kind with
 		| KNormal | KGeneric | KGenericInstance _ -> s_path ctx false c.cl_path p
 		| KTypeParameter | KExtension _ | KExpr _ | KMacroType -> "dynamic")
-	| TFun _ ->
-		"object"
+	| TFun (args, r) ->
+		(match r with
+		| TEnum({ e_path = [],"Void" },[]) -> 
+			(match args with 
+			| [] -> "Action"
+			| _ -> "Action<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ ">")
+		| _ -> "Func<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ (type_str ctx r p) ^ ">")
 	| TMono r ->
 		(match !r with None -> "dynamic" | Some t -> type_str ctx t p)
 	| TAnon _ | TDynamic _ ->
@@ -291,27 +296,23 @@ let gen_function_header ctx name f params p =
 	let old = ctx.in_value in
 	let locals = save_locals ctx in
 	let old_t = ctx.local_types in
+	let is_anon = (name == None) in
 	ctx.in_value <- None;
 	ctx.local_types <- List.map snd params @ ctx.local_types;
-	print ctx "%s" (type_str ctx f.tf_type p);
-	print ctx "%s(" (match name with None -> "" | Some (n,meta) ->
-		let rec loop = function
-			| [] -> n
-			| (":getter",[Ast.EConst (Ast.Ident i | Ast.Type i),_],_) :: _ -> "get " ^ i
-			| (":setter",[Ast.EConst (Ast.Ident i | Ast.Type i),_],_) :: _ -> "set " ^ i
-			| _ :: l -> loop l
-		in
-		" " ^ loop meta
-	);
-	concat ctx "," (fun (v,c) ->
+	let fun_type = (match is_anon with true -> "" | false -> (type_str ctx f.tf_type p) ^ " ") in
+	let fun_name = (match name with None -> "delegate" | Some (n,_) -> n) in
+	print ctx "%s%s(" fun_type fun_name;
+	concat ctx ", " (fun (v,c) ->
 		let tstr = type_str ctx v.v_type p in
 		print ctx "%s %s" tstr (s_ident v.v_name);
-		match c with
-		| None ->
-			if ctx.constructor_block then print ctx " = %s" (default_value tstr);
-		| Some c ->
-			spr ctx " = ";
-			gen_constant ctx p c
+		(match is_anon with
+			| false -> (match c with
+				| None ->
+					if ctx.constructor_block then print ctx " = %s" (default_value tstr);
+				| Some c ->
+					spr ctx " = ";
+					gen_constant ctx p c)
+			| true -> ())
 	) f.tf_args;
 	print ctx ")";
 	(fun () ->
@@ -322,7 +323,7 @@ let gen_function_header ctx name f params p =
 
 let rec gen_call ctx e el r =
 	match e.eexpr , el with
-	| TCall (x,_) , el ->
+	| TCall (x,_) , el when (match x.eexpr with TLocal { v_name = "__cs__" } -> false | _ -> true) ->
 		spr ctx "(";
 		gen_value ctx e;
 		spr ctx ")";
@@ -403,6 +404,8 @@ let rec gen_call ctx e el r =
 		spr ctx "(";
 		gen_value ctx e;
 		spr ctx ")"
+	| TLocal { v_name = "__cs__" }, [{ eexpr = TConst (TString code) }] ->
+		spr ctx (String.concat "\n" (ExtString.String.nsplit code "\r\n"))		
 	| _ ->
 		gen_value ctx e;
 		spr ctx "(";
@@ -532,9 +535,9 @@ and gen_expr ctx e =
 	| TCall (v,el) ->
 		gen_call ctx v el e.etype
 	| TArrayDecl el ->
-		spr ctx "[";
+		spr ctx "{";
 		concat ctx "," (gen_value ctx) el;
-		spr ctx "]"
+		spr ctx "}"
 	| TThrow e ->
 		spr ctx "throw ";
 		gen_value ctx e;
@@ -587,8 +590,8 @@ and gen_expr ctx e =
 		gen_value ctx (parent cond);
 		handle_break();
 	| TObjectDecl fields ->
-		spr ctx "{ ";
-		concat ctx ", " (fun (f,e) -> print ctx "%s : " (s_ident f); gen_value ctx e) fields;
+		spr ctx "new { ";
+		concat ctx ", " (fun (f,e) -> print ctx "%s=" (s_ident f); gen_value ctx e) fields;
 		spr ctx "}"
 	| TFor (v,it,e) ->
 		let handle_break = handle_break ctx e in
@@ -714,9 +717,9 @@ and gen_value ctx e =
 		let r = alloc_var (gen_local ctx "$r") e.etype in
 		ctx.in_value <- Some r;
 		if ctx.in_static then
-			print ctx "function() : %s " t
+			print ctx "delegate()"
 		else
-			print ctx "(function($this:%s) : %s " (snd ctx.path) t;
+			print ctx "(delegate(%s _this) " (snd ctx.path);
 		let b = if block then begin
 			spr ctx "{";
 			let b = open_block ctx in
@@ -926,7 +929,8 @@ let generate_field ctx static f =
 			| None -> ()
 			| Some e ->
 				print ctx " = ";
-				gen_value ctx e
+				gen_value ctx e;
+				print ctx ";"
 		end
 
 let rec define_getset ctx stat c =
@@ -964,7 +968,7 @@ let generate_class ctx c =
 	| l ->
 		(match c.cl_super with
 		| None -> ()
-		| Some (_,_) -> print ctx ", ");
+		| _ -> print ctx ", ");
 		concat ctx ", " (fun (i,_) -> print ctx "%s" (s_path ctx true i.cl_path c.cl_pos)) l);
 	spr ctx "{";
 	let cl = open_block ctx in

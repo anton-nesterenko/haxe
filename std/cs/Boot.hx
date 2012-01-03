@@ -168,7 +168,7 @@ class Boot {
 		def_color = rgb; */
 	}
 
-	private static function __trace(v,inf : haxe.PosInfos) {
+	public static function __trace(v,inf : haxe.PosInfos) {
 		/* untyped {
 			var root = flash.Lib.current;
 			var tf = getTrace();
