@@ -38,6 +38,9 @@ class Log {
 		untyped __dollar__print(infos.fileName+":"+infos.lineNumber+": ",v,"\n");
 		#elseif js
 		untyped js.Boot.__trace(v,infos);
+		#elseif cs
+		untyped System.Diagnostics.Debug.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
+		untyped Console.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
 		#elseif php
 		untyped __call__('_hx_trace', v,infos);
 		#elseif cpp
