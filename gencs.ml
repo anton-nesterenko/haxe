@@ -16,6 +16,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *)
+open Ast
 open Type
 open Common
 
@@ -28,6 +29,8 @@ type context = {
 	ch : out_channel;
 	buf : Buffer.t;
 	path : path;
+	srcfile : string;
+	mutable last_line : int;
 	mutable root_ns : string;
 	mutable get_sets : (string * bool,string) Hashtbl.t;
 	mutable curclass : tclass;
@@ -101,7 +104,7 @@ let cs_s_type_path ctx (p,s) =
 	| _ -> String.concat "." p	
 
 (* Start writing a module where path is the module path in pkg, name format *)
-let init infos path =
+let init infos path sfile =
 	let rec create acc = function
 		| [] -> ()
 		| d :: l ->
@@ -119,6 +122,8 @@ let init infos path =
 		tabs = "";
 		ch = ch;
 		path = path;
+		srcfile = sfile;
+		last_line = -1;
 		root_ns = "Program";
 		buf = Buffer.create (1 lsl 14);
 		in_value = None;
@@ -133,6 +138,10 @@ let init infos path =
 	}
 						
 let close ctx =
+	(match ctx.inf.com.lines, ctx.srcfile with
+	| _, "" -> ()
+	| true, _ -> output_string ctx.ch (Printf.sprintf "#line 1 \"%s\"\n" (get_full_path ctx.srcfile))
+	| _ -> ()); 
 	let ns_path = (get_namespace ctx ctx.path) in
 	output_string ctx.ch (Printf.sprintf "namespace %s {\n" (String.concat "." (fst ns_path)));
 	List.iter (fun path ->
@@ -162,12 +171,22 @@ let unsupported p = error "This expression cannot be generated to C#" p
 let newline ctx =
 	let rec loop p =
 		let ch = (if p >= 0 then (Buffer.nth ctx.buf p) else ';') in
+	 	let nl = (if ctx.inf.com.lines then "" else "\n") in
+		let tb = (if ctx.inf.com.lines then "" else ctx.tabs) in
 		match ch with
-		| '}' | '{' | ':' | ';' -> print ctx "\n%s" ctx.tabs
+		| '}' | '{' | ':' | ';' -> print ctx "%s%s" nl tb
 		| '\n' | '\t' -> loop (p - 1)
-		| _ -> print ctx ";\n%s" ctx.tabs
+		| _ -> print ctx ";%s%s" nl tb
 	in
 	loop (Buffer.length ctx.buf - 1)
+
+let line_pos ctx p =
+	let cur_line = Lexer.get_error_line p in
+	let is_new_line = (cur_line != ctx.last_line) in
+	(match ctx.inf.com.lines && is_new_line with
+		| true -> print ctx "\n#line %d\n" (Lexer.get_error_line p)
+		| false -> ());
+	ctx.last_line <- cur_line
 
 let rec concat ctx s f = function
 	| [] -> ()
@@ -519,7 +538,7 @@ and gen_expr ctx e =
 			print ctx " if( !%s.skip_constructor ) {" (s_path ctx true (["cs"],"Boot") e.epos);
             (fun() -> print ctx "}")
 		end) in
-		List.iter (fun e -> newline ctx; gen_expr ctx e) el;
+		List.iter (fun e -> newline ctx; line_pos ctx e.epos; gen_expr ctx e) el;
 		bend();
 		newline ctx;
 		cb();
@@ -553,9 +572,11 @@ and gen_expr ctx e =
 				gen_value ctx e
 		) vl;
 	| TNew (c,params,el) ->
-		(match c.cl_path, params with
-		| (["flash"],"Vector"), [pt] -> print ctx "new Vector.<%s>(" (type_str ctx pt e.epos)
-		| _ -> print ctx "new %s(" (s_path ctx true c.cl_path e.epos));
+		(match params with
+		| [] -> print ctx "new %s(" (s_path ctx true c.cl_path e.epos);
+		| _ -> 
+			print ctx "new %s<" (s_path ctx true c.cl_path e.epos); 
+			concat ctx "," (fun pt -> (print ctx "%s" (type_str ctx pt e.epos))) params);
 		concat ctx "," (gen_value ctx) el;
 		spr ctx ")"
 	| TIf (cond,e,eelse) ->
@@ -862,6 +883,7 @@ let generate_field ctx static f =
 	let p = ctx.curclass.cl_pos in
 	match f.cf_expr, f.cf_kind with
 	| Some { eexpr = TFunction fd }, Method (MethNormal | MethInline) ->
+		line_pos ctx f.cf_pos;
 		print ctx "%s " rights;
 		let rec loop c =
 			match c.cl_super with
@@ -924,6 +946,10 @@ let generate_field ctx static f =
 			newline ctx;
 			print ctx "}";
 		end else begin
+			(match f.cf_expr with
+			| None -> ()
+			| Some e -> 
+				line_pos ctx e.epos);
 			print ctx "%s %s %s" rights (type_str ctx f.cf_type p) (s_ident f.cf_name);
 			match f.cf_expr with
 			| None -> ()
@@ -956,6 +982,7 @@ let generate_class ctx c =
 	define_getset ctx false c;
 	ctx.local_types <- List.map snd c.cl_types;
 	let pack = open_block ctx in
+	line_pos ctx c.cl_pos;
 	print ctx "\tpublic %s%s %s" (match c.cl_dynamic with None -> "" | Some _ -> if c.cl_interface then "" else "dynamic ") (if c.cl_interface then "interface" else "class") (snd c.cl_path);
 	(match c.cl_super, c.cl_implements with
 	| None, [] -> ()
@@ -1080,7 +1107,7 @@ let generate com =
 	let infos = {
 		com = com;
 	} in
-	let ctx = init infos ([],"HaxeEnum") in
+	let ctx = (init infos ([],"HaxeEnum") "") in
 	generate_base_enum ctx;
 	close ctx;
 	let inits = ref [] in
@@ -1097,7 +1124,7 @@ let generate com =
 			if c.cl_extern then
 				()
 			else
-				let ctx = init infos c.cl_path in
+				let ctx = (init infos c.cl_path c.cl_pos.pfile) in
 				generate_class ctx c;
 				close ctx
 		| TEnumDecl e ->
@@ -1106,7 +1133,7 @@ let generate com =
 			if e.e_extern && e.e_path <> ([],"Void") then
 				()
 			else
-				let ctx = init infos e.e_path in
+				let ctx = (init infos e.e_path e.e_pos.pfile) in
 				generate_enum ctx e;
 				close ctx
 		| TTypeDecl t ->
@@ -1115,6 +1142,6 @@ let generate com =
 	(match com.main with
 	| None -> ()
 	| Some e -> inits := e :: !inits);
-	let ctx = init infos ([],"__main__") in
+	let ctx = (init infos ([],"__main__") "") in
 	generate_main ctx (List.rev !inits);
 	close ctx
