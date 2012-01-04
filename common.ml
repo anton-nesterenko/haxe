@@ -50,6 +50,7 @@ type context = {
 	version : int;
 	mutable display : bool;
 	mutable debug : bool;
+	mutable lines : bool; (* generate line directives in output files *)
 	mutable verbose : bool;
 	mutable foptimize : bool;
 	mutable dead_code_elimination : bool;
@@ -93,6 +94,7 @@ let create v =
 	{
 		version = v;
 		debug = false;
+		lines = false;
 		display = !display_default;
 		verbose = false;
 		foptimize = true;

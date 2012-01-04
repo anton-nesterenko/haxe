@@ -638,7 +638,9 @@ try
 		("-debug", Arg.Unit (fun() ->
 			Common.define com "debug"; com.debug <- true
 		), ": add debug informations to the compiled code");
-	] in
+		("-lines", Arg.Unit (fun() ->
+			com.lines <- true
+		), ": add #line directives to the compiled code");	] in
 	let adv_args_spec = [
 		("-swf-version",Arg.Float (fun v ->
 			com.flash_version <- v;
