@@ -851,10 +851,7 @@ and gen_value ctx e =
 		)) e.etype e.epos);
 		v()
 
-let generate_field ctx static f =
-	newline ctx;
-	ctx.in_static <- static;
-	ctx.gen_uid <- 0;
+let generate_meta ctx f =
 	List.iter (fun(m,pl,_) ->
 		match m,pl with
 		| ":meta", [Ast.ECall ((Ast.EConst (Ast.Ident n | Ast.Type n),_),args),_] ->
@@ -877,7 +874,13 @@ let generate_field ctx static f =
 				print ctx ")");
 			print ctx "]";
 		| _ -> ()
-	) f.cf_meta;
+	) f.cf_meta
+
+let generate_field ctx static f =
+	newline ctx;
+	ctx.in_static <- static;
+	ctx.gen_uid <- 0;
+	generate_meta ctx f;
 	let public = f.cf_public || Hashtbl.mem ctx.get_sets (f.cf_name,static) || (f.cf_name = "main" && static) || f.cf_name = "resolve" in
 	let rights = (if static then "static " else "") ^ (if public then "public" else "protected") in
 	let p = ctx.curclass.cl_pos in
