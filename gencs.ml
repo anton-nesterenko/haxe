@@ -318,7 +318,7 @@ let gen_function_header ctx name f params p =
 	let is_anon = (name == None) in
 	ctx.in_value <- None;
 	ctx.local_types <- List.map snd params @ ctx.local_types;
-	let fun_type = (match is_anon with true -> "" | false -> (type_str ctx f.tf_type p) ^ " ") in
+	let fun_type = (match is_anon || ctx.constructor_block with true -> "" | false -> (type_str ctx f.tf_type p) ^ " ") in
 	let fun_name = (match name with None -> "delegate" | Some (n,_) -> n) in
 	print ctx "%s%s(" fun_type fun_name;
 	concat ctx ", " (fun (v,c) ->
@@ -851,6 +851,7 @@ and gen_value ctx e =
 		)) e.etype e.epos);
 		v()
 
+(* Generates C# attributes based on haxe's meta declarations - of course the C# attribute classes must exist for this to work *)
 let generate_meta ctx f =
 	List.iter (fun(m,pl,_) ->
 		match m,pl with
@@ -890,7 +891,17 @@ let generate_field ctx static f =
 		print ctx "%s " rights;
 		let rec loop c =
 			match c.cl_super with
-			| None -> ()
+			| None -> 
+				let rec loop2 = function
+					| [] -> 
+						(match f.cf_kind == Method (MethInline) || ctx.constructor_block with 
+						| true -> () 
+						| false -> spr ctx "virtual ")
+					| (":nonvirtual",_,_) :: _ -> ()
+					| (":final",_,_) :: _ -> spr ctx "sealed "
+					| _ :: l -> loop2 l
+				in 
+				loop2 f.cf_meta
 			| Some (c,_) ->
 				if PMap.mem f.cf_name c.cl_fields then
 					spr ctx "override "
