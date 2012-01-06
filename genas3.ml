@@ -371,13 +371,6 @@ let rec gen_call ctx e el r =
 		spr ctx "(";
 		concat ctx "," (gen_value ctx) args;
 		spr ctx ")";
-	| TLocal { v_name = "__delete__" }, [e;f] ->
-		spr ctx "delete(";
-		gen_value ctx e;
-		spr ctx "[";
-		gen_value ctx f;
-		spr ctx "]";
-		spr ctx ")";
 	| TLocal { v_name = "__unprotect__" }, [e] ->
 		gen_value ctx e
 	| TLocal { v_name = "__vector__" }, [e] ->
@@ -396,16 +389,6 @@ let rec gen_call ctx e el r =
 			spr ctx "(";
 			concat ctx "," (gen_value ctx) el;
 			spr ctx ")")
-	| TField ({ eexpr = TTypeExpr (TClassDecl { cl_path = (["flash"],"Vector") }) },f), args ->
-		(match f, args with
-		| "ofArray", [e] | "convert", [e] ->
-			(match follow r with
-			| TInst ({ cl_path = (["flash"],"Vector") },[t]) ->
-				print ctx "Vector.<%s>(" (type_str ctx t e.epos);
-				gen_value ctx e;
-				print ctx ")";
-			| _ -> assert false)
-		| _ -> assert false)
 	| _ ->
 		gen_value ctx e;
 		spr ctx "(";
