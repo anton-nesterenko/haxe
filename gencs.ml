@@ -58,9 +58,8 @@ let s_path ctx stat path p =
 		| "Float" -> "double"
 		| "Dynamic" -> "dynamic"
 		| "Bool" -> "bool"
-		| "Enum" -> "object"
-		| "Array" -> "List<object>"
-		| _ -> ctx.root_ns ^ "." ^ name)
+		| "Enum" -> "HaxeEnum"
+		| _ -> name)
 	| (["haxe"],"Int32") when not stat ->
 		"int"
 	| (pack,name) ->
@@ -91,12 +90,6 @@ let default_namespaces = [
 let s_ident n =
 	if Hashtbl.mem reserved n then "_" ^ n else n
 
-(* Gets module path, replacing empty path with ctx.root_ns *)
-let get_namespace ctx path =
-	match path with
-	| ([], _) -> ([ctx.root_ns], (snd path)) (* Use the default root path *)
-	| _ -> path
-
 (* Gets type path string minus the class, if no ns path, use default ctx.root_ns *)
 let cs_s_type_path ctx (p,s) = 
 	match p with 
@@ -124,7 +117,7 @@ let init infos path sfile =
 		path = path;
 		srcfile = sfile;
 		last_line = -1;
-		root_ns = "Program";
+		root_ns = "Root"; (* TODO: Allow this to be set as an option *)
 		buf = Buffer.create (1 lsl 14);
 		in_value = None;
 		in_static = false;
@@ -142,8 +135,12 @@ let close ctx =
 	| _, "" -> ()
 	| true, _ -> output_string ctx.ch (Printf.sprintf "#line 1 \"%s\"\n" (get_full_path ctx.srcfile))
 	| _ -> ()); 
-	let ns_path = (get_namespace ctx ctx.path) in
-	output_string ctx.ch (Printf.sprintf "namespace %s {\n" (String.concat "." (fst ns_path)));
+	(match (fst ctx.path) with
+	| [] ->
+		output_string ctx.ch (Printf.sprintf "namespace %s {\n" ctx.root_ns)
+	| _ ->
+		output_string ctx.ch (Printf.sprintf "namespace %s {\n" (String.concat "." (fst ctx.path)));
+		output_string ctx.ch (Printf.sprintf "\tusing %s;\n" ctx.root_ns));
 	List.iter (fun path ->
 		output_string ctx.ch ("\tusing " ^ (cs_s_type_path ctx path) ^ ";\n");
 	) default_namespaces;
@@ -213,6 +210,9 @@ let default_value tstr =
 	| "bool" -> "false"
 	| _ -> "null"
 
+let has_dynamic_arg args = 
+	List.exists (fun t -> match (follow t) with TInst ({ cl_path = [],"Dynamic" },_) | TDynamic _ -> true | _ -> false) args
+
 let rec type_str ctx t p =
 	match t with
 	| TEnum _ | TInst _ when List.memq t ctx.local_types ->
@@ -234,10 +234,18 @@ let rec type_str ctx t p =
 				loop e.e_meta
 		) else
 			s_path ctx true e.e_path p
-	| TInst (c,_) ->
+	| TInst (c,params) ->
 		(match c.cl_kind with
-		| KNormal | KGeneric | KGenericInstance _ -> s_path ctx false c.cl_path p
-		| KTypeParameter | KExtension _ | KExpr _ | KMacroType -> "dynamic")
+		| KNormal | KGeneric | KGenericInstance _ -> 
+			(match has_dynamic_arg params with
+			| true -> "dynamic"
+			| false -> 
+				(match params with
+				| [] -> s_path ctx true c.cl_path p
+				| _ -> (s_path ctx true c.cl_path p) ^ "<" ^ 
+					(String.concat "," (List.map (fun pt -> type_str ctx pt p) params)) ^ ">"))
+		| KTypeParameter | KExtension _ | KExpr _ | KMacroType -> 
+			"dynamic")
 	| TFun (args, r) ->
 		(match r with
 		| TEnum({ e_path = [],"Void" },[]) -> 
@@ -250,18 +258,22 @@ let rec type_str ctx t p =
 	| TAnon _ | TDynamic _ ->
 		"dynamic"
 	| TType (t,args) ->
-		(match t.t_path with
-		| [], "UInt" -> "uint"
-		| [] , "Null" ->
-			(match args with
-			| [t] ->
-				(match follow t with
-				| TInst ({ cl_path = [],"Int" },_)
-				| TInst ({ cl_path = [],"Float" },_)
-				| TEnum ({ e_path = [],"Bool" },_) -> "dynamic"
-				| _ -> type_str ctx t p)
-			| _ -> assert false);
-		| _ -> type_str ctx (apply_params t.t_types args t.t_type) p)
+		(match has_dynamic_arg args with
+		| true -> "dynamic"
+		| false ->
+			(match t.t_path with
+			| [], "UInt" -> "uint"
+			| [] , "Null" ->
+				(match args with
+				| [t] ->
+					(match follow t with
+					| TInst ({ cl_path = [],"Int" },_) -> "int?"
+					| TInst ({ cl_path = [],"UInt" },_) -> "uint?"
+					| TInst ({ cl_path = [],"Float" },_) -> "double?"
+					| TEnum ({ e_path = [],"Bool" },_) -> "bool?"
+					| _ -> type_str ctx t p)
+				| _ -> assert false);
+			| _ -> type_str ctx (apply_params t.t_types args t.t_type) p))
 	| TLazy f ->
 		type_str ctx ((!f)()) p
 
@@ -373,56 +385,14 @@ let rec gen_call ctx e el r =
 		spr ctx "typeof(";
 		gen_value ctx e;
 		spr ctx ")";
-	| TLocal { v_name = "__keys__" }, [e] ->
-		let ret = (match ctx.in_value with None -> assert false | Some r -> r) in
-		print ctx "%s = new List<object>()" ret.v_name;
-		newline ctx;
-		let b = save_locals ctx in
-		let tmp = gen_local ctx "$k" in
-		print ctx "foreach (string %s in " tmp;
-		gen_value ctx e;
-		print ctx ") %s.push(%s)" ret.v_name tmp;
-		b();
-	| TLocal { v_name = "__hkeys__" }, [e] ->
-		let ret = (match ctx.in_value with None -> assert false | Some r -> r) in
-		print ctx "%s = new List<object>" ret.v_name;
-		newline ctx;
-		let b = save_locals ctx in
-		let tmp = gen_local ctx "$k" in
-		print ctx "foreach (string %s in " tmp;
-		gen_value ctx e;
-		print ctx ") %s.Add(%s.substr(1))" ret.v_name tmp;
-		b();
-	| TLocal { v_name = "__foreach__" }, [e] ->
-		let ret = (match ctx.in_value with None -> assert false | Some r -> r) in
-		print ctx "%s = new List<object>()" ret.v_name;
-		newline ctx;
-		let b = save_locals ctx in
-		let tmp = gen_local ctx "$k" in
-		print ctx "foreach (object %s in " tmp;
-		gen_value ctx e;
-		print ctx ") %s.push(%s)" ret.v_name tmp;
-		b();
 	| TLocal { v_name = "__new__" }, e :: args ->
 		spr ctx "new ";
 		gen_value ctx e;
 		spr ctx "(";
 		concat ctx "," (gen_value ctx) args;
 		spr ctx ")";
-	| TLocal { v_name = "__delete__" }, [e;f] ->
-		spr ctx "delete(";
-		gen_value ctx e;
-		spr ctx "[";
-		gen_value ctx f;
-		spr ctx "]";
-		spr ctx ")";
 	| TLocal { v_name = "__unprotect__" }, [e] ->
 		gen_value ctx e
-	| TLocal { v_name = "__vector__" }, [e] ->
-		spr ctx (type_str ctx r e.epos);
-		spr ctx "(";
-		gen_value ctx e;
-		spr ctx ")"
 	| TLocal { v_name = "__cs__" }, [{ eexpr = TConst (TString code) }] ->
 		spr ctx (String.concat "\n" (ExtString.String.nsplit code "\r\n"))		
 	| _ ->
@@ -487,7 +457,7 @@ and gen_expr ctx e =
 		gen_value ctx e1;
 		spr ctx "[";
 		gen_value ctx e2;
-		spr ctx "]";
+		spr ctx "];";
 	| TBinop (op,{ eexpr = TField (e1,s) },e2) ->
 		gen_value_op ctx e1;
 		gen_field_access ctx e1.etype s;
@@ -576,7 +546,8 @@ and gen_expr ctx e =
 		| [] -> print ctx "new %s(" (s_path ctx true c.cl_path e.epos);
 		| _ -> 
 			print ctx "new %s<" (s_path ctx true c.cl_path e.epos); 
-			concat ctx "," (fun pt -> (print ctx "%s" (type_str ctx pt e.epos))) params);
+			concat ctx "," (fun pt -> (print ctx "%s" (match (type_str ctx pt e.epos) with "dynamic" -> "object" | s -> s))) params;
+			spr ctx ">(");
 		concat ctx "," (gen_value ctx) el;
 		spr ctx ")"
 	| TIf (cond,e,eelse) ->
