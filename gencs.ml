@@ -66,7 +66,7 @@ let s_path ctx stat path p =
 		let name = protect name in
 		let packs = (try Hashtbl.find ctx.imports name with Not_found -> []) in
 		if not (List.mem pack packs) then Hashtbl.replace ctx.imports name (pack :: packs);
-		Ast.s_type_path (pack,name)
+		if (fst path) == (fst ctx.path) then name else Ast.s_type_path (pack,name)
 
 let reserved =
 	let h = Hashtbl.create 0 in
@@ -210,13 +210,13 @@ let default_value tstr =
 	| "bool" -> "false"
 	| _ -> "null"
 
-let has_dynamic_arg args = 
-	List.exists (fun t -> match (follow t) with TInst ({ cl_path = [],"Dynamic" },_) | TDynamic _ -> true | _ -> false) args
+let has_dynamic_arg ctx args = 
+	List.exists (fun t -> (match (follow t) with TInst ({ cl_path = [],"Dynamic" },_) | TDynamic _ -> true | _ -> false)) args
 
 let rec type_str ctx t p =
 	match t with
-	| TEnum _ | TInst _ when List.memq t ctx.local_types ->
-		"dynamic"
+	(* | TEnum _ | TInst _ when List.memq t ctx.local_types ->
+		"dynamic" *)
 	| TEnum (e,_) ->
 		if e.e_extern then (match e.e_path with
 			| [], "Void" -> "void"
@@ -237,15 +237,17 @@ let rec type_str ctx t p =
 	| TInst (c,params) ->
 		(match c.cl_kind with
 		| KNormal | KGeneric | KGenericInstance _ -> 
-			(match has_dynamic_arg params with
+			(match has_dynamic_arg ctx params with
 			| true -> "dynamic"
 			| false -> 
 				(match params with
 				| [] -> s_path ctx true c.cl_path p
 				| _ -> (s_path ctx true c.cl_path p) ^ "<" ^ 
 					(String.concat "," (List.map (fun pt -> type_str ctx pt p) params)) ^ ">"))
-		| KTypeParameter | KExtension _ | KExpr _ | KMacroType -> 
-			"dynamic")
+		| KExtension _ | KExpr _ | KMacroType ->
+			"dynamic"
+		| KTypeParameter ->
+			snd c.cl_path)
 	| TFun (args, r) ->
 		(match r with
 		| TEnum({ e_path = [],"Void" },[]) -> 
@@ -258,22 +260,21 @@ let rec type_str ctx t p =
 	| TAnon _ | TDynamic _ ->
 		"dynamic"
 	| TType (t,args) ->
-		(match has_dynamic_arg args with
-		| true -> "dynamic"
-		| false ->
-			(match t.t_path with
-			| [], "UInt" -> "uint"
-			| [] , "Null" ->
-				(match args with
-				| [t] ->
-					(match follow t with
-					| TInst ({ cl_path = [],"Int" },_) -> "int?"
-					| TInst ({ cl_path = [],"UInt" },_) -> "uint?"
-					| TInst ({ cl_path = [],"Float" },_) -> "double?"
-					| TEnum ({ e_path = [],"Bool" },_) -> "bool?"
-					| _ -> type_str ctx t p)
-				| _ -> assert false);
-			| _ -> type_str ctx (apply_params t.t_types args t.t_type) p))
+		(match t.t_path with
+		| [], "UInt" -> "uint"
+		| [] , "Null" ->
+			(match args with
+			| [t] ->
+				(match follow t with
+				| TInst ({ cl_path = [],"Int" },_) -> "int?"
+				| TInst ({ cl_path = [],"UInt" },_) -> "uint?"
+				| TInst ({ cl_path = [],"Float" },_) -> "double?"
+				| TInst ({ cl_kind = KTypeParameter },_) -> "object"
+				| TEnum ({ e_path = [],"Bool" },_) -> "bool?"
+				| _ -> type_str ctx t p)
+			| _ -> assert false);
+		| _ ->
+			type_str ctx (apply_params t.t_types args t.t_type) p)
 	| TLazy f ->
 		type_str ctx ((!f)()) p
 
@@ -342,7 +343,7 @@ let gen_function_header ctx name f params p =
 					if ctx.constructor_block then print ctx " = %s" (default_value tstr);
 				| Some c ->
 					spr ctx " = ";
-					gen_constant ctx p c)
+					(match c with TNull -> spr ctx (default_value tstr) | _ -> gen_constant ctx p c))
 			| true -> ())
 	) f.tf_args;
 	print ctx ")";
@@ -968,7 +969,20 @@ let generate_class ctx c =
 	ctx.local_types <- List.map snd c.cl_types;
 	let pack = open_block ctx in
 	line_pos ctx c.cl_pos;
-	print ctx "\tpublic %s%s %s" (match c.cl_dynamic with None -> "" | Some _ -> if c.cl_interface then "" else "dynamic ") (if c.cl_interface then "interface" else "class") (snd c.cl_path);
+	print ctx "\tpublic %s%s %s" (match c.cl_dynamic with None -> 
+		"" | Some _ -> if c.cl_interface then "" else "dynamic ") (if c.cl_interface then "interface" else "class") (snd c.cl_path);
+	(match c.cl_types with
+	| [] -> ()
+	| _ ->
+		spr ctx "<"; 
+		concat ctx "," (fun (n,t) -> print ctx "%s" n) c.cl_types;
+		spr ctx ">");
+	(let rec loop = function
+		| [] -> ()
+		| (":native_base",[Ast.EConst (Ast.String s),_],_) :: _ -> print ctx " : %s" s;
+		| _ :: l -> loop l
+	in
+	loop c.cl_meta);
 	(match c.cl_super, c.cl_implements with
 	| None, [] -> ()
 	| _ -> print ctx " : ");
