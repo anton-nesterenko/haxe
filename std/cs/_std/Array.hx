@@ -23,34 +23,7 @@
  * DAMAGE.
  */
 
-@native("System.Collections.Generic.List<T>.Enumerator")
-extern class Enumerator<T> {
-}
-
-/* @:final
-class ListIterator<T> {
-
-	private var _e : Enumerator<T>;
-	private var _hasNext : Bool;
-	
-	public function new(e : Enumerator<T>) {
-		_e = e;
-		untyped _hasNext = _e.MoveNext();
-	}
-	
-    function hasNext() : Bool {
-    	return _hasNext;
-    }
-    
-    function next() : T {
-    	var c : T;
-    	untyped {
-    		c = _e.Current;
-    		_hasNext = _e.MoveNext();
-    	}
-    	return c;
-    }
-} */
+import ArrayIterator;
 
 @:core_api @:final @:native_base("System.Collections.Generic.List<T>") 
 class Array<T> {
@@ -86,7 +59,7 @@ class Array<T> {
 	}
 
 	public function iterator() : Iterator<Null<T>> {
-		untyped return null;
+		return new ArrayIterator<T>(this);
 	}
 
 	public function insert( pos : Int, x : T ) : Void {
@@ -145,3 +118,4 @@ class Array<T> {
 		return null;
 	}
 }
+
