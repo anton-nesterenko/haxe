@@ -436,6 +436,7 @@ let sanitize_expr e =
 		| TFor _	(* a temp var is needed for holding iterator *)
 		| TMatch _	(* a temp var is needed for holding enum *)
 		| TCall ({ eexpr = TLocal { v_name = "__js__" } },_) (* we never know *)
+		| TCall ({ eexpr = TLocal { v_name = "__cs__" } },_) (* we never know *)
 			-> block e
 		| _ -> e
 	in

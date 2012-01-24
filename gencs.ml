@@ -22,6 +22,7 @@ open Common
 
 type context_infos = {
 	com : Common.context;
+	mutable cs_files : string list;
 }
 
 type context = {
@@ -29,7 +30,10 @@ type context = {
 	ch : out_channel;
 	buf : Buffer.t;
 	path : path;
+	ext : string;
+	is_cs : bool;
 	srcfile : string;
+	outfile : string;
 	mutable last_line : int;
 	mutable root_ns : string;
 	mutable get_sets : (string * bool,string) Hashtbl.t;
@@ -59,7 +63,7 @@ let s_path ctx stat path p =
 		| "Dynamic" -> "dynamic"
 		| "Bool" -> "bool"
 		| "Enum" -> "HaxeEnum"
-		| _ -> name)
+		| _ -> ctx.root_ns ^ "." ^ name)
 	| (["haxe"],"Int32") when not stat ->
 		"int"
 	| (pack,name) ->
@@ -97,7 +101,7 @@ let cs_s_type_path ctx (p,s) =
 	| _ -> String.concat "." p	
 
 (* Start writing a module where path is the module path in pkg, name format *)
-let init infos path sfile =
+let init infos path sfile ext =
 	let rec create acc = function
 		| [] -> ()
 		| d :: l ->
@@ -107,7 +111,10 @@ let init infos path sfile =
 	in
 	let dir = infos.com.file :: fst path in
 	create [] dir;
-	let ch = open_out (String.concat "/" dir ^ "/" ^ snd path ^ ".cs") in
+	let is_cs_ext = (match ext with ".cs" -> true | _ -> false) in
+	let outfile = (String.concat "/" dir ^ "/" ^ snd path ^ ext) in
+	if is_cs_ext then infos.cs_files <- outfile :: infos.cs_files;
+	let ch = open_out outfile in
 	let imports = Hashtbl.create 0 in
 	Hashtbl.add imports (snd path) [fst path];
 	{
@@ -115,9 +122,12 @@ let init infos path sfile =
 		tabs = "";
 		ch = ch;
 		path = path;
+		ext = ext;
+		is_cs = is_cs_ext;
 		srcfile = sfile;
+		outfile = outfile;
 		last_line = -1;
-		root_ns = "Root"; (* TODO: Allow this to be set as an option *)
+		root_ns = (match infos.com.cs_root with Some rt -> rt | None -> "Root");
 		buf = Buffer.create (1 lsl 14);
 		in_value = None;
 		in_static = false;
@@ -129,8 +139,8 @@ let init infos path sfile =
 		get_sets = Hashtbl.create 0;
 		constructor_block = false;
 	}
-						
-let close ctx =
+
+let write_cs_hdr ctx =
 	(match ctx.inf.com.lines, ctx.srcfile with
 	| _, "" -> ()
 	| true, _ -> output_string ctx.ch (Printf.sprintf "#line 1 \"%s\"\n" (get_full_path ctx.srcfile))
@@ -149,7 +159,11 @@ let close ctx =
 			let path = pack, name in
 			if path <> ctx.path then output_string ctx.ch ("\tusing " ^ (cs_s_type_path ctx path) ^ ";\n");
 		) paths
-	) ctx.imports;
+	) ctx.imports
+																		
+let close ctx =
+	if ctx.is_cs then
+		write_cs_hdr ctx;
 	output_string ctx.ch (Buffer.contents ctx.buf);
 	close_out ctx.ch
 
@@ -166,16 +180,20 @@ let print ctx = Printf.kprintf (fun s -> Buffer.add_string ctx.buf s)
 let unsupported p = error "This expression cannot be generated to C#" p
 
 let newline ctx =
-	let rec loop p =
-		let ch = (if p >= 0 then (Buffer.nth ctx.buf p) else ';') in
-	 	let nl = (if ctx.inf.com.lines then "" else "\n") in
-		let tb = (if ctx.inf.com.lines then "" else ctx.tabs) in
-		match ch with
-		| '}' | '{' | ':' | ';' -> print ctx "%s%s" nl tb
-		| '\n' | '\t' -> loop (p - 1)
-		| _ -> print ctx ";%s%s" nl tb
-	in
-	loop (Buffer.length ctx.buf - 1)
+	(match ctx.is_cs with
+	| true ->
+		let rec loop p =
+			let ch = (if p >= 0 then (Buffer.nth ctx.buf p) else ';') in
+		 	let nl = (if ctx.inf.com.lines then "" else "\n") in
+			let tb = (if ctx.inf.com.lines then "" else ctx.tabs) in
+			match ch with
+			| '}' | '{' | ':' | ';' -> print ctx "%s%s" nl tb
+			| '\n' | '\t' -> loop (p - 1)
+			| _ -> print ctx ";%s%s" nl tb
+		in
+		loop (Buffer.length ctx.buf - 1);
+	| false ->
+		spr ctx "\n")
 
 let line_pos ctx p =
 	let cur_line = Lexer.get_error_line p in
@@ -355,13 +373,6 @@ let gen_function_header ctx name f params p =
 
 let rec gen_call ctx e el r =
 	match e.eexpr , el with
-	| TCall (x,_) , el when (match x.eexpr with TLocal { v_name = "__cs__" } -> false | _ -> true) ->
-		spr ctx "(";
-		gen_value ctx e;
-		spr ctx ")";
-		spr ctx "(";
-		concat ctx "," (gen_value ctx) el;
-		spr ctx ")";
 	| TLocal { v_name = "__is__" } , [e1;e2] ->
 		gen_value ctx e1;
 		spr ctx " is ";
@@ -1102,11 +1113,28 @@ let generate_base_enum ctx =
 	print ctx "}";
 	newline ctx
 
+let generate_build_rsp ctx =
+	let opts = (match ctx.inf.com.cs_options with 
+	| Some o -> o;
+	| None -> "-main:__main__\n") in
+	print ctx "%s\n" opts;
+	(match ctx.inf.com.cs_refs with
+	| [] -> ();
+	| _ -> print ctx "-reference:%s\n" (String.concat " -reference:" ctx.inf.com.cs_refs));  
+	let out = (match ctx.inf.com.cs_out with
+	| Some o -> o;
+	| None -> (match ctx.inf.com.main_class with
+		| Some mc -> (snd mc);
+		| None -> "Program")) in
+	print ctx "-out:%s\n" out;
+	print ctx "%s\n" (String.concat " " ctx.inf.cs_files)
+		
 let generate com =
 	let infos = {
 		com = com;
+		cs_files = [];
 	} in
-	let ctx = (init infos ([],"HaxeEnum") "") in
+	let ctx = (init infos ([],"HaxeEnum") "" ".cs") in
 	generate_base_enum ctx;
 	close ctx;
 	let inits = ref [] in
@@ -1123,7 +1151,7 @@ let generate com =
 			if c.cl_extern then
 				()
 			else
-				let ctx = (init infos c.cl_path c.cl_pos.pfile) in
+				let ctx = (init infos c.cl_path c.cl_pos.pfile ".cs") in
 				generate_class ctx c;
 				close ctx
 		| TEnumDecl e ->
@@ -1132,7 +1160,7 @@ let generate com =
 			if e.e_extern && e.e_path <> ([],"Void") then
 				()
 			else
-				let ctx = (init infos e.e_path e.e_pos.pfile) in
+				let ctx = (init infos e.e_path e.e_pos.pfile ".cs") in
 				generate_enum ctx e;
 				close ctx
 		| TTypeDecl t ->
@@ -1141,6 +1169,9 @@ let generate com =
 	(match com.main with
 	| None -> ()
 	| Some e -> inits := e :: !inits);
-	let ctx = (init infos ([],"__main__") "") in
+	let ctx = (init infos ([],"__main__") "" ".cs") in
 	generate_main ctx (List.rev !inits);
+	close ctx;
+	let ctx = (init infos ([],"build") "" ".rsp") in
+	generate_build_rsp ctx;
 	close ctx

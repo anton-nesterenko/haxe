@@ -28,6 +28,7 @@ import cs.Lib;
 
 class Boot {
 
+	public static var skip_constructor : Bool;
 //	private static var def_color = 0;
 //	private static var exception = null;
 

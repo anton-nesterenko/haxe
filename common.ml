@@ -78,6 +78,11 @@ type context = {
 	mutable php_prefix : string option;
 	mutable swf_libs : (string * (unit -> Swf.swf) * (unit -> ((string list * string),As3hl.hl_class) Hashtbl.t)) list;
 	mutable js_gen : (unit -> unit) option;
+	mutable cs_cmd : string option;
+	mutable cs_root : string option;
+	mutable cs_out : string option;
+	mutable cs_refs : string list;
+	mutable cs_options : string option;
 	(* typing *)
 	mutable basic : basic_types;
 }
@@ -133,6 +138,11 @@ let create v =
 		neko_libs = [];
 		php_prefix = None;
 		js_gen = None;
+		cs_root = None;
+		cs_cmd = None;
+		cs_out = None;
+		cs_refs = [];
+		cs_options = None;
 		load_extern_type = [];
 		defines_signature = None;
 		warning = (fun _ _ -> assert false);
