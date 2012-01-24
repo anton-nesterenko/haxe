@@ -33,14 +33,6 @@ class Array<T> {
 
 	public var length(default,null):Int;
 
-	private function getLength() : Int {
-		untyped return this.Length;
-	}
-	
-	private function setLength(l : Int) : Int {
-		return 0;
-	}
-
 	public function concat( a : Array<T>) : Array<T> {
 		var a2 = new Array<T>();
 		untyped {
@@ -63,7 +55,10 @@ class Array<T> {
 	}
 
 	public function insert( pos : Int, x : T ) : Void {
-		untyped this.Insert(pos, x);
+		untyped {
+			this.Insert(pos, x);
+			length = this.Count;
+		}
 	}
 
 	public function join( sep : String ) : String {
@@ -71,32 +66,59 @@ class Array<T> {
 	}
 
 	public function toString() : String {
-		var s = new StringBuf();
-		s.add("[");
-		var it = iterator();
-		for( i in it ) {
-			s.add(i);
-			if( it.hasNext() )
-				s.add(", ");
-		}
-		s.add("]");
-		return s.toString();
+		var ret : String = null;
+		untyped __cs__('
+			var sb = new System.Text.StringBuilder();
+			sb.Append("[");
+			int l = Count;
+			for (int i = 0; i < l; i++) {
+				if (i > 0) {
+					sb.Append(",");
+				}
+				sb.Append(this[i].ToString());
+			}
+			sb.Append("]");
+			ret = sb.ToString();
+		');
+		return ret;
 	}
 
 	public function pop() : Null<T> {
-		return null;
+		untyped {
+			if (this.Count > 0) {
+				var ret : Null<T> = this[this.Count - 1];
+				this.RemoveAt(this.Count - 1);
+				length--;
+				return ret;
+			} else {
+				return null;
+			}
+		}
 	}
 
 	public function push(x:T) : Int {
-		untyped this.Add(x);
-		return untyped this.Length - 1;
+		untyped {
+			this.Add(x);
+			length++;
+			return length - 1;
+		}
 	}
 
 	public function unshift(x : T) : Void {
+		untyped {
+			this.Insert(0, x);
+			length++;
+		}
 	}
 
 	public function remove(x : T) : Bool {
-		untyped return this.Remove(x);
+		untyped {
+			var ret : Bool = this.Remove(x);
+			if (ret) {
+				length--;
+			}
+			return ret;
+		}
 	}
 
 	public function reverse() : Void {
@@ -104,7 +126,16 @@ class Array<T> {
 	}
 
 	public function shift() : Null<T> {
-		return null;
+		untyped {
+			if (this.Count > 0) {
+				var ret : Null<T> = this[0];
+				this.RemoveAt(0);
+				length--;
+				return ret;
+			} else {
+				return null;
+			}
+		}
 	}
 
 	public function slice( pos : Int, ?end : Int ) : Array<T> {

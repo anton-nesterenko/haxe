@@ -37,10 +37,10 @@ class ArrayIterator<T> {
 	}
 	
     public function hasNext() : Bool {
-    	untyped return _i < _a.Length - 1;
+    	untyped return _i < _a.Count - 1;
     }
     
     public function next() : Null<T> {
-    	untyped return _a[++i];
+    	untyped return _a[++_i];
     }
 }

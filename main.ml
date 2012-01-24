@@ -549,6 +549,7 @@ try
 	let force_typing = ref false in
 	let pre_compilation = ref [] in
 	let interp = ref false in
+	let cs_cmd = ref None in
 	Common.define com ("haxe_" ^ string_of_int version);
 	com.warning <- (fun msg p -> message ctx ("Warning : " ^ msg) p);
 	com.error <- error ctx;
@@ -743,6 +744,25 @@ try
 			com.php_prefix <- Some f;
 			Common.define com "php_prefix";
 		),"<name> : prefix all classes with given name");
+		("--cs-root", Arg.String (fun f ->
+			if com.cs_root <> None then raise (Arg.Bad "Multiple --cs-root");
+			com.cs_root <- Some f;
+		),"<namespace> : root namespace to use for cs target (default is 'Root')");		
+		("--cs-cmd", Arg.String (fun f ->
+			cs_cmd := Some f;
+		),"<cmd> : cs compiler command to execute after generating code (i.e. dmcs for the Mono compiler).");
+		("--cs-out", Arg.String (fun f ->
+			if com.cs_out <> None then raise (Arg.Bad "Multiple --cs-out");
+			com.cs_out <- Some f;
+		),"<outpath> : Output cs compiler file (default is [mainclass].exe)");		
+		("--cs-refs", Arg.String (fun f ->
+			if com.cs_refs <> [] then raise (Arg.Bad "Multiple --cs-refs");
+			com.cs_refs <- (try ExtString.String.nsplit f "," with _ -> raise (Arg.Bad "Invalid format"));
+		),"<refs> : comma separated list of assembly references (default is no refs).");
+		("--cs-options", Arg.String (fun f ->
+			if com.cs_options <> None then raise (Arg.Bad "Multiple --cs-options");
+			com.cs_options <- Some f;
+		),"<options> : cs compiler options (default no options).");		
 		("--remap", Arg.String (fun s ->
 			let pack, target = (try ExtString.String.split s ":" with _ -> raise (Arg.Bad "Invalid format")) in
 			com.package_rules <- PMap.add pack (Remap target) com.package_rules;
@@ -820,7 +840,12 @@ try
 		| Js -> add_std "js"; "js"
 		| Php -> add_std "php"; "php"
 		| Cpp -> add_std "cpp"; "cpp"
-		| Cs -> add_std "cs"; "cs"
+		| Cs ->
+			(match !cs_cmd with 
+			| Some c -> cmds := ((expand_env (unquote c)) ^ " @\"" ^ (get_full_path com.file) ^ "/build.rsp\"") :: !cmds;
+			| _ -> ());
+			add_std "cs"; 
+			"cs"
 	) in
 	(* if we are at the last compilation step, allow all packages accesses - in case of macros or opening another project file *)
 	if com.display && not ctx.has_next then com.package_rules <- PMap.foldi (fun p r acc -> match r with Forbidden -> acc | _ -> PMap.add p r acc) com.package_rules PMap.empty;
