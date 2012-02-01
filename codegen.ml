@@ -798,6 +798,8 @@ let captured_vars com e =
 	| Js ->
 		out_loop e
 	| Cs ->
+		let used = all_vars e in
+		PMap.iter (fun _ v -> v.v_capture <- true) used;		
 		out_loop e
 
 (* -------------------------------------------------------------------------- *)

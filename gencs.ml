@@ -322,7 +322,7 @@ let handle_break ctx e =
 				spr ctx "} catch( Exception e ) { if( e != \"__break__\" ) throw new e; }";
 			)
 
-let this ctx = if ctx.in_value <> None then "$this" else "this"
+let this ctx = if ctx.in_value <> None then "__this" else "this"
 
 let escape_bin s =
 	let b = Buffer.create 0 in
@@ -600,7 +600,7 @@ and gen_expr ctx e =
 	| TFor (v,it,e) ->
 		let handle_break = handle_break ctx e in
 		let b = save_locals ctx in
-		let tmp = gen_local ctx "$it" in
+		let tmp = gen_local ctx "__it" in
 		print ctx "{ dynamic %s = " tmp;
 		gen_value ctx it;
 		newline ctx;
@@ -624,7 +624,7 @@ and gen_expr ctx e =
 		let bend = open_block ctx in
 		newline ctx;
 		let b = save_locals ctx in
-		let tmp = gen_local ctx "$e" in
+		let tmp = gen_local ctx "__e" in
 		print ctx "HaxeEnum %s = " tmp;
 		gen_value ctx e;
 		newline ctx;
@@ -714,16 +714,18 @@ and gen_value ctx e =
 	let block e =
 		mk (TBlock [e]) e.etype e.epos
 	in
+	(* Handle statements that return values (like switch statements).  *)
+	(* We do this by defining an inline lambda and calling it. *)
 	let value block =
 		let old = ctx.in_value in
 		let t = type_str ctx e.etype e.epos in
 		let locs = save_locals ctx in
-		let r = alloc_var (gen_local ctx "$r") e.etype in
+		let r = alloc_var (gen_local ctx "__r") e.etype in
 		ctx.in_value <- Some r;
 		if ctx.in_static then
-			print ctx "delegate()"
+			print ctx "((Func<%s>)(() => " t
 		else
-			print ctx "(delegate(%s _this) " (snd ctx.path);
+			print ctx "((Func<%s,%s>)((%s __this) => " (snd ctx.path) t (snd ctx.path);
 		let b = if block then begin
 			spr ctx "{";
 			let b = open_block ctx in
@@ -745,9 +747,9 @@ and gen_value ctx e =
 			ctx.in_value <- old;
 			locs();
 			if ctx.in_static then
-				print ctx "()"
+				print ctx "))()"
 			else
-				print ctx "(%s))" (this ctx)
+				print ctx "))(%s)" (this ctx)
 		)
 	in
 	match e.eexpr with
@@ -925,7 +927,7 @@ let generate_field ctx static f =
 			let id = s_ident f.cf_name in
 			let v = (match f.cf_kind with Var v -> v | _ -> assert false) in
 			(match v.v_read with
-			| AccNormal | AccNo | AccNever ->
+			| AccNormal | AccNo ->
 				print ctx "get { return __%s; }" id;
 			| AccCall m ->
 				print ctx "get { return %s(); }" m;
@@ -936,7 +938,7 @@ let generate_field ctx static f =
 				print ctx "set { __%s = value; }" id;
 			| AccCall m ->
 				print ctx "set { %s(value); }" m;
-			| AccNo | AccNever ->
+			| AccNo ->
 				print ctx "%s set { __%s = value; }" (if v.v_write = AccNo then "protected" else "private") id;
 			| _ -> ());
 			b();
