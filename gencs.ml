@@ -41,6 +41,7 @@ type context = {
 	mutable tabs : string;
 	mutable in_value : tvar option;
 	mutable in_static : bool;
+	mutable need_semi : bool;
 	mutable handle_break : bool;
 	mutable imports : (string,string list list) Hashtbl.t;
 	mutable gen_uid : int;
@@ -56,12 +57,12 @@ let s_path ctx stat path p =
 	match path with
 	| ([],name) ->
 		(match name with
-		| "Int" -> "int"
-		| "String" -> "string"
-		| "Single" -> "float"
-		| "Float" -> "double"
-		| "Dynamic" -> "dynamic"
-		| "Bool" -> "bool"
+		| "Int" | "int" -> "int"
+		| "String" | "string" -> "string"
+		| "Single" | "float" -> "float"
+		| "Float" | "double" -> "double"
+		| "Dynamic" | "dynamic" -> "dynamic"
+		| "Bool" | "bool" -> "bool"
 		| "Enum" -> "HaxeEnum"
 		| _ -> ctx.root_ns ^ "." ^ name)
 	| (["haxe"],"Int32") when not stat ->
@@ -76,7 +77,7 @@ let reserved =
 	let h = Hashtbl.create 0 in
 	List.iter (fun l -> Hashtbl.add h l ())
 	(* these ones are defined in order to prevent recursion in some Std functions *)
-	["is";"as";"int";"uint";"byte";"sbyte";"short";"ushort";"long";"ulong";"float";"double";"decimal";"const";"getTimer";"typeof";"parseInt";"parseFloat";
+	["is";"as";"string";"bool";"object";"int";"uint";"byte";"sbyte";"short";"ushort";"long";"ulong";"float";"double";"decimal";"const";"getTimer";"typeof";"parseInt";"parseFloat";
 	(* C# keywords which are not haXe ones *)
 	"each";"label";"finally";"with";"sealed";"internal";"const";"namespace";
 	(* we don't include get+set since they are not 'real' keywords, but they can't be used as method names *)
@@ -132,6 +133,7 @@ let init infos path sfile ext =
 		in_value = None;
 		in_static = false;
 		handle_break = false;
+		need_semi = false;
 		imports = imports;
 		curclass = null_class;
 		gen_uid = 0;
@@ -174,8 +176,13 @@ let gen_local ctx l =
 	ctx.gen_uid <- ctx.gen_uid + 1;
 	if ctx.gen_uid = 1 then l else l ^ string_of_int ctx.gen_uid
 
-let spr ctx s = Buffer.add_string ctx.buf s
-let print ctx = Printf.kprintf (fun s -> Buffer.add_string ctx.buf s)
+let spr ctx s = 
+	ctx.need_semi <- false;
+	Buffer.add_string ctx.buf s
+
+let print ctx = 
+	ctx.need_semi <- false;
+	Printf.kprintf (fun s -> Buffer.add_string ctx.buf s)
 
 let unsupported p = error "This expression cannot be generated to C#" p
 
@@ -183,7 +190,7 @@ let newline ctx =
 	(match ctx.is_cs with
 	| true ->
 		let rec loop p =
-			let ch = (if p >= 0 then (Buffer.nth ctx.buf p) else ';') in
+			let ch = (if ctx.need_semi then '.' else (if p >= 0 then (Buffer.nth ctx.buf p) else ';')) in
 		 	let nl = (if ctx.inf.com.lines then "" else "\n") in
 			let tb = (if ctx.inf.com.lines then "" else ctx.tabs) in
 			match ch with
@@ -192,6 +199,7 @@ let newline ctx =
 			| _ -> print ctx ";%s%s" nl tb
 		in
 		loop (Buffer.length ctx.buf - 1);
+		ctx.need_semi <- false;
 	| false ->
 		spr ctx "\n")
 
@@ -374,13 +382,21 @@ let gen_function_header ctx name f params p =
 let rec gen_call ctx e el r =
 	match e.eexpr , el with
 	| TLocal { v_name = "__is__" } , [e1;e2] ->
+		spr ctx "(";
 		gen_value ctx e1;
 		spr ctx " is ";
 		gen_value ctx e2;
+		spr ctx ")";
 	| TLocal { v_name = "__as__" }, [e1;e2] ->
+		spr ctx "(";
 		gen_value ctx e1;
 		spr ctx " as ";
 		gen_value ctx e2;
+		spr ctx ")";
+	| TLocal { v_name = "__char__" }, [e] ->
+		spr ctx "(char)(";
+		gen_value ctx e;
+		spr ctx ")";
 	| TLocal { v_name = "__int__" }, [e] ->
 		spr ctx "(int)(";
 		gen_value ctx e;
@@ -469,7 +485,7 @@ and gen_expr ctx e =
 		gen_value ctx e1;
 		spr ctx "[";
 		gen_value ctx e2;
-		spr ctx "];";
+		spr ctx "]";
 	| TBinop (op,{ eexpr = TField (e1,s) },e2) ->
 		gen_value_op ctx e1;
 		gen_field_access ctx e1.etype s;
@@ -538,14 +554,16 @@ and gen_expr ctx e =
 	| TArrayDecl el ->
 		spr ctx "{";
 		concat ctx "," (gen_value ctx) el;
-		spr ctx "}"
+		spr ctx "}";
+		ctx.need_semi <- true;
 	| TThrow e ->
-		spr ctx "throw ";
+		spr ctx "throw new Exception(";
 		gen_value ctx e;
+		spr ctx ")";
 	| TVars [] ->
 		()
 	| TVars vl ->
-		concat ctx ", " (fun (v,eo) ->
+		concat ctx "; " (fun (v,eo) ->
 			print ctx "%s %s" (type_str ctx v.v_type e.epos) (s_ident v.v_name);
 			match eo with
 			| None -> ()
@@ -594,9 +612,10 @@ and gen_expr ctx e =
 		gen_value ctx (parent cond);
 		handle_break();
 	| TObjectDecl fields ->
-		spr ctx "new { ";
-		concat ctx ", " (fun (f,e) -> print ctx "%s=" (s_ident f); gen_value ctx e) fields;
-		spr ctx "}"
+		spr ctx "new Dictionary<string,object> { ";
+		concat ctx ", " (fun (f,e) -> print ctx "{ \"%s\", " (s_ident f); gen_value ctx e; spr ctx "}") fields;
+		spr ctx "}";
+		ctx.need_semi <- true;
 	| TFor (v,it,e) ->
 		let handle_break = handle_break ctx e in
 		let b = save_locals ctx in
@@ -690,9 +709,13 @@ and gen_expr ctx e =
 		);
 		spr ctx "}"
 	| TCast (e1,None) ->
-		spr ctx "((";
-		gen_expr ctx e1;
-		print ctx ") as %s)" (type_str ctx e.etype e.epos);
+		let t = type_str ctx e.etype e.epos in
+		(match t with 
+		| "void" -> gen_expr ctx e1
+		| _ -> 
+		  spr ctx "((";
+		  gen_expr ctx e1;
+		  print ctx ") as %s)" t);
 	| TCast (e1,Some t) ->
 		gen_expr ctx (Codegen.default_cast ctx.inf.com e1 t e.etype e.epos)
 
