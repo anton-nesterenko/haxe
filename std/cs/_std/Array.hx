@@ -31,7 +31,11 @@ class Array<T> {
 	public function new() : Void {
 	}
 
-	public var length(default,null):Int;
+	public var length(getLength,never):Int;
+
+	private inline function getLength() : Int {
+		return untyped this.Count;
+	}
 
 	public function concat( a : Array<T>) : Array<T> {
 		var a2 = new Array<T>();
@@ -50,15 +54,12 @@ class Array<T> {
 		return a;
 	}
 
-	public function iterator() : Iterator<Null<T>> {
+	public inline function iterator() : Iterator<Null<T>> {
 		return new ArrayIterator<T>(this);
 	}
 
-	public function insert( pos : Int, x : T ) : Void {
-		untyped {
-			this.Insert(pos, x);
-			length = this.Count;
-		}
+	public inline function insert( pos : Int, x : T ) : Void {
+		untyped this.Insert(pos, x);
 	}
 
 	public function join( sep : String ) : String {
@@ -88,7 +89,6 @@ class Array<T> {
 			if (this.Count > 0) {
 				var ret : Null<T> = this[this.Count - 1];
 				this.RemoveAt(this.Count - 1);
-				length--;
 				return ret;
 			} else {
 				return null;
@@ -99,26 +99,16 @@ class Array<T> {
 	public function push(x:T) : Int {
 		untyped {
 			this.Add(x);
-			length++;
-			return length - 1;
+			return this.Count - 1;
 		}
 	}
 
-	public function unshift(x : T) : Void {
-		untyped {
-			this.Insert(0, x);
-			length++;
-		}
+	public inline function unshift(x : T) : Void {
+		untyped this.Insert(0, x);
 	}
 
-	public function remove(x : T) : Bool {
-		untyped {
-			var ret : Bool = this.Remove(x);
-			if (ret) {
-				length--;
-			}
-			return ret;
-		}
+	public inline function remove(x : T) : Bool {
+		untyped return this.Remove(x);
 	}
 
 	public function reverse() : Void {
@@ -130,7 +120,6 @@ class Array<T> {
 			if (this.Count > 0) {
 				var ret : Null<T> = this[0];
 				this.RemoveAt(0);
-				length--;
 				return ret;
 			} else {
 				return null;

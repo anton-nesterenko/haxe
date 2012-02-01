@@ -33,7 +33,7 @@ extern class Array<T> {
 	/**
 		The length of the Array
 	**/
-	var length(default,null) : Int;
+	var length(getLength,never) : Int;
 
 	/**
 		Creates a new Array.

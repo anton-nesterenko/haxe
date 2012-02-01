@@ -802,6 +802,7 @@ let init_class ctx c p herits fields =
 		| Neko -> [["neko"], "Boot"]
 		| Php -> [["php"], "Boot"]
 		| Cpp -> [["cpp"], "Boot"]
+		| Cs -> [["cs"], "Boot"]
 		| _ -> [] in
 	let must_keep_class =
 		List.exists (fun p -> p = c.cl_path) (must_keep_types ctx.com.platform)

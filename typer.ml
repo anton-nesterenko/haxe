@@ -175,7 +175,7 @@ let rec unify_call_params ctx name el args r p inline =
 	let rec loop acc l l2 skip =
 		match l , l2 with
 		| [] , [] ->
-			if not (inline && ctx.g.doinline) && (match ctx.com.platform with Flash | Flash9 | Js -> true | _ -> false) then
+			if not (inline && ctx.g.doinline) && (match ctx.com.platform with Flash | Flash9 | Js | Cs -> true | _ -> false) then
 				List.rev (no_opt acc), r
 			else
 				List.rev (List.map fst acc), r
