@@ -31,7 +31,7 @@ extern class String {
 	/**
 		The number of characters in the String.
 	**/
-	var length(default,null) : Int;
+	var length(getLength,null) : Int;
 
 	/**
 		Creates a copy from a given String.
