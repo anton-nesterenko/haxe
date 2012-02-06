@@ -40,12 +40,20 @@ extern class Float { }
 **/
 extern class Int extends Float { }
 
-#if (flash9 || flash9doc)
+#if (flash9 || flash9doc || cs)
 /**
-	The unsigned Int type is only defined for Flash9. It's currently
+	The unsigned Int type is only defined for Flash9 and CSharp. It's currently
 	handled the same as a normal Int.
 **/
 typedef UInt = Int
+#end
+
+#if (cs)
+/**
+	The Single (32 bit float) type is only defined for  CSharp. It's currently
+	handled the same as a normal Number.
+**/
+typedef Single = Float
 #end
 
 /**

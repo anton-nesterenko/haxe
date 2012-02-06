@@ -341,45 +341,47 @@ let valid_redefinition ctx f1 t1 f2 t2 =
 		valid t1 t2
 
 let check_overriding ctx c p () =
-	match c.cl_super with
-	| None ->
-		(match c.cl_overrides with
-		| [] -> ()
-		| i :: _ ->
-			display_error ctx ("Field " ^ i ^ " is declared 'override' but doesn't override any field") p)
-	| Some (csup,params) ->
-		PMap.iter (fun i f ->
-			try
-				let t , f2 = raw_class_field (fun f -> f.cf_type) csup i in
-				(* allow to define fields that are not defined for this platform version in superclass *)
-				(match f2.cf_kind with
-				| Var { v_read = AccRequire _ } -> raise Not_found;
-				| _ -> ());
-				ignore(follow f.cf_type); (* force evaluation *)
-				let p = (match f.cf_expr with None -> p | Some e -> e.epos) in
-				if not (List.mem i c.cl_overrides) then
-					display_error ctx ("Field " ^ i ^ " should be declared with 'override' since it is inherited from superclass") p
-				else if f.cf_public <> f2.cf_public then
-					display_error ctx ("Field " ^ i ^ " has different visibility (public/private) than superclass one") p
-				else (match f.cf_kind, f2.cf_kind with
-				| _, Method MethInline ->
-					display_error ctx ("Field " ^ i ^ " is inlined and cannot be overridden") p
-				| a, b when a = b -> ()
-				| Method MethInline, Method MethNormal ->
-					() (* allow to redefine a method as inlined *)
-				| _ ->
-					display_error ctx ("Field " ^ i ^ " has different property access than in superclass") p);
+	let is_cs_extern = (platform ctx.com Cs) && c.cl_extern in
+	if not is_cs_extern then
+		match c.cl_super with
+		| None ->
+			(match c.cl_overrides with
+			| [] -> ()
+			| i :: _ ->
+				display_error ctx ("Field " ^ i ^ " is declared 'override' but doesn't override any field") p)
+		| Some (csup,params) ->
+			PMap.iter (fun i f ->
 				try
-					let t = apply_params csup.cl_types params t in
-					valid_redefinition ctx f f.cf_type f2 t
+					let t , f2 = raw_class_field (fun f -> f.cf_type) csup i in
+					(* allow to define fields that are not defined for this platform version in superclass *)
+					(match f2.cf_kind with
+					| Var { v_read = AccRequire _ } -> raise Not_found;
+					| _ -> ());
+					ignore(follow f.cf_type); (* force evaluation *)
+					let p = (match f.cf_expr with None -> p | Some e -> e.epos) in
+					if not (List.mem i c.cl_overrides) then
+						display_error ctx ("Field " ^ i ^ " should be declared with 'override' since it is inherited from superclass") p
+					else if f.cf_public <> f2.cf_public then
+						display_error ctx ("Field " ^ i ^ " has different visibility (public/private) than superclass one") p
+					else (match f.cf_kind, f2.cf_kind with
+					| _, Method MethInline ->
+						display_error ctx ("Field " ^ i ^ " is inlined and cannot be overridden") p
+					| a, b when a = b -> ()
+					| Method MethInline, Method MethNormal ->
+						() (* allow to redefine a method as inlined *)
+					| _ ->
+						display_error ctx ("Field " ^ i ^ " has different property access than in superclass") p);
+					try
+						let t = apply_params csup.cl_types params t in
+						valid_redefinition ctx f f.cf_type f2 t
+					with
+						Unify_error l ->
+							display_error ctx ("Field " ^ i ^ " overload parent class with different or incomplete type") p;
+							display_error ctx (error_msg (Unify l)) p;
 				with
-					Unify_error l ->
-						display_error ctx ("Field " ^ i ^ " overload parent class with different or incomplete type") p;
-						display_error ctx (error_msg (Unify l)) p;
-			with
-				Not_found ->
-					if List.mem i c.cl_overrides then display_error ctx ("Field " ^ i ^ " is declared 'override' but doesn't override any field") p
-		) c.cl_fields
+					Not_found ->
+						if List.mem i c.cl_overrides then display_error ctx ("Field " ^ i ^ " is declared 'override' but doesn't override any field") p
+			) c.cl_fields
 
 let class_field_no_interf c i =
 	try
@@ -424,10 +426,12 @@ let rec check_interface ctx c p intf params =
 	) intf.cl_implements
 
 let check_interfaces ctx c p () =
-	match c.cl_path with
-	| "Proxy" :: _ , _ -> ()
-	| _ ->
-	List.iter (fun (intf,params) -> check_interface ctx c p intf params) c.cl_implements
+	let is_cs_extern = (platform ctx.com Cs) && c.cl_extern in
+	if not is_cs_extern then (* Cs explicit interface method defs won't be in it's extern classes. *)
+		match c.cl_path with
+		| "Proxy" :: _ , _ -> ()
+		| _ ->
+		List.iter (fun (intf,params) -> check_interface ctx c p intf params) c.cl_implements
 
 let rec return_flow ctx e =
 	let error() = display_error ctx "A return is missing here" e.epos; raise Exit in
