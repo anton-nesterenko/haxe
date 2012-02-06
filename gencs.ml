@@ -44,6 +44,7 @@ type context = {
 	mutable need_semi : bool;
 	mutable handle_break : bool;
 	mutable imports : (string,string list list) Hashtbl.t;
+	mutable usings : string list;
 	mutable gen_uid : int;
 	mutable local_types : t list;
 	mutable constructor_block : bool;
@@ -52,6 +53,23 @@ type context = {
 let protect name =
 	match name with
 	| _ -> name
+
+(* Gets type path string minus the class, if no ns path, use default ctx.root_ns *)
+let s_namespace ctx path = 
+	let p = (fst path) in
+	match p with 
+	| [] -> ctx.root_ns 
+	| _ -> String.concat "." p	
+
+let add_import ctx path =
+	let pack = (fst path) in
+	let name = protect (snd path) in
+	let packs = (try Hashtbl.find ctx.imports name with Not_found -> []) in
+	let namespace = s_namespace ctx path in
+	if not (List.mem pack packs) then 
+		Hashtbl.replace ctx.imports name (pack :: packs);
+	if not (List.mem namespace ctx.usings) then
+		ctx.usings <- namespace :: ctx.usings
 
 let s_path ctx stat path p =
 	match path with
@@ -68,9 +86,8 @@ let s_path ctx stat path p =
 	| (["haxe"],"Int32") when not stat ->
 		"int"
 	| (pack,name) ->
+		add_import ctx path;
 		let name = protect name in
-		let packs = (try Hashtbl.find ctx.imports name with Not_found -> []) in
-		if not (List.mem pack packs) then Hashtbl.replace ctx.imports name (pack :: packs);
 		if (fst path) == (fst ctx.path) then name else Ast.s_type_path (pack,name)
 
 let reserved =
@@ -95,12 +112,6 @@ let default_namespaces = [
 let s_ident n =
 	if Hashtbl.mem reserved n then "_" ^ n else n
 
-(* Gets type path string minus the class, if no ns path, use default ctx.root_ns *)
-let cs_s_type_path ctx (p,s) = 
-	match p with 
-	| [] -> ctx.root_ns 
-	| _ -> String.concat "." p	
-
 (* Start writing a module where path is the module path in pkg, name format *)
 let init infos path sfile ext =
 	let rec create acc = function
@@ -116,8 +127,6 @@ let init infos path sfile ext =
 	let outfile = (String.concat "/" dir ^ "/" ^ snd path ^ ext) in
 	if is_cs_ext then infos.cs_files <- outfile :: infos.cs_files;
 	let ch = open_out outfile in
-	let imports = Hashtbl.create 0 in
-	Hashtbl.add imports (snd path) [fst path];
 	{
 		inf = infos;
 		tabs = "";
@@ -134,7 +143,8 @@ let init infos path sfile ext =
 		in_static = false;
 		handle_break = false;
 		need_semi = false;
-		imports = imports;
+		imports = Hashtbl.create 0;
+		usings = [];
 		curclass = null_class;
 		gen_uid = 0;
 		local_types = [];
@@ -146,22 +156,15 @@ let write_cs_hdr ctx =
 	(match ctx.inf.com.lines, ctx.srcfile with
 	| _, "" -> ()
 	| true, _ -> output_string ctx.ch (Printf.sprintf "#line 1 \"%s\"\n" (get_full_path ctx.srcfile))
-	| _ -> ()); 
-	(match (fst ctx.path) with
-	| [] ->
-		output_string ctx.ch (Printf.sprintf "namespace %s {\n" ctx.root_ns)
-	| _ ->
-		output_string ctx.ch (Printf.sprintf "namespace %s {\n" (String.concat "." (fst ctx.path)));
-		output_string ctx.ch (Printf.sprintf "\tusing %s;\n" ctx.root_ns));
-	List.iter (fun path ->
-		output_string ctx.ch ("\tusing " ^ (cs_s_type_path ctx path) ^ ";\n");
-	) default_namespaces;
-	Hashtbl.iter (fun name paths ->
-		List.iter (fun pack ->
-			let path = pack, name in
-			if path <> ctx.path then output_string ctx.ch ("\tusing " ^ (cs_s_type_path ctx path) ^ ";\n");
-		) paths
-	) ctx.imports
+	| _ -> ());
+	let this_ns = s_namespace ctx ctx.path in 
+	output_string ctx.ch ("namespace " ^ this_ns ^ " {\n\n");
+	List.iter (fun path -> add_import ctx path) default_namespaces;
+	let ns_list = List.sort (fun a b -> String.compare (String.lowercase a) (String.lowercase b)) ctx.usings in
+	List.iter (fun ns ->
+		if ns <> this_ns then output_string ctx.ch ("\tusing " ^ ns ^ ";\n");
+	) ns_list;
+	output_string ctx.ch "\n"
 																		
 let close ctx =
 	if ctx.is_cs then
@@ -263,13 +266,20 @@ let rec type_str ctx t p =
 	| TInst (c,params) ->
 		(match c.cl_kind with
 		| KNormal | KGeneric | KGenericInstance _ -> 
-			(match has_dynamic_arg ctx params with
+			(match (has_dynamic_arg ctx params) with
 			| true -> "dynamic"
 			| false -> 
-				(match params with
-				| [] -> s_path ctx true c.cl_path p
-				| _ -> (s_path ctx true c.cl_path p) ^ "<" ^ 
-					(String.concat "," (List.map (fun pt -> type_str ctx pt p) params)) ^ ">"))
+				(match c.cl_path with
+				| (["cs"],"NativeArray") -> (type_str ctx (List.hd params) p) ^ "[]"
+				| (["cs"],"NativeArray2") -> (type_str ctx (List.hd params) p) ^ "[,]"
+				| (["cs"],"NativeArray3") -> (type_str ctx (List.hd params) p) ^ "[,,]"
+				| (["cs"],"NativeJaggedArray2") -> (type_str ctx (List.hd params) p) ^ "[][]"
+				| (["cs"],"NativeJaggedArray3") -> (type_str ctx (List.hd params) p) ^ "[][][]"
+				| _ ->
+					(match params with
+					| [] -> s_path ctx true c.cl_path p
+					| _ -> (s_path ctx true c.cl_path p) ^ "<" ^ 
+						(String.concat "," (List.map (fun pt -> type_str ctx pt p) params)) ^ ">")))
 		| KExtension _ | KExpr _ | KMacroType ->
 			"dynamic"
 		| KTypeParameter ->
@@ -287,13 +297,15 @@ let rec type_str ctx t p =
 		"dynamic"
 	| TType (t,args) ->
 		(match t.t_path with
-		| [], "UInt" -> "uint"
-		| [] , "Null" ->
+		| ([],"UInt") -> "uint"
+		| ([],"Single") -> "float"
+		| ([],"Null") ->
 			(match args with
 			| [t] ->
 				(match follow t with
 				| TInst ({ cl_path = [],"Int" },_) -> "int?"
 				| TInst ({ cl_path = [],"UInt" },_) -> "uint?"
+				| TInst ({ cl_path = [],"Single" },_) -> "float?"
 				| TInst ({ cl_path = [],"Float" },_) -> "double?"
 				| TInst ({ cl_kind = KTypeParameter },_) -> "object"
 				| TEnum ({ e_path = [],"Bool" },_) -> "bool?"
@@ -413,6 +425,51 @@ let rec gen_call ctx e el r =
 		spr ctx "typeof(";
 		gen_value ctx e;
 		spr ctx ")";
+	| TLocal { v_name = "__setElemAt__" }, [e1;e2;e3] ->
+		gen_value ctx e1;
+		spr ctx "[";
+		gen_value ctx e2;
+		spr ctx "]=";
+		gen_value ctx e3;
+	| TLocal { v_name = "__setElemAt__" }, [e1;e2;e3;e4] ->
+		gen_value ctx e1;
+		spr ctx "[";
+		gen_value ctx e2;
+		spr ctx ",";
+		gen_value ctx e3;
+		spr ctx "]=";	
+		gen_value ctx e4;		
+	| TLocal { v_name = "__setElemAt__" }, [e1;e2;e3;e4;e5] ->
+		gen_value ctx e1;
+		spr ctx "[";
+		gen_value ctx e2;
+		spr ctx ",";
+		gen_value ctx e3;
+		spr ctx ",";
+		gen_value ctx e4;
+		spr ctx "]=";	
+		gen_value ctx e5;
+	| TLocal { v_name = "__getElemAt__" }, [e1;e2] ->
+		gen_value ctx e1;
+		spr ctx "[";
+		gen_value ctx e2;
+		spr ctx "]";	
+	| TLocal { v_name = "__getElemAt__" }, [e1;e2;e3] ->
+		gen_value ctx e1;
+		spr ctx "[";
+		gen_value ctx e2;
+		spr ctx ",";
+		gen_value ctx e3;
+		spr ctx "]";	
+	| TLocal { v_name = "__getElemAt__" }, [e1;e2;e3;e4] ->
+		gen_value ctx e1;
+		spr ctx "[";
+		gen_value ctx e2;
+		spr ctx ",";
+		gen_value ctx e3;
+		spr ctx ",";
+		gen_value ctx e4;
+		spr ctx "]";	
 	| TLocal { v_name = "__new__" }, e :: args ->
 		spr ctx "new ";
 		gen_value ctx e;
@@ -572,14 +629,24 @@ and gen_expr ctx e =
 				gen_value ctx e
 		) vl;
 	| TNew (c,params,el) ->
-		(match params with
-		| [] -> print ctx "new %s(" (s_path ctx true c.cl_path e.epos);
-		| _ -> 
-			print ctx "new %s<" (s_path ctx true c.cl_path e.epos); 
-			concat ctx "," (fun pt -> (print ctx "%s" (match (type_str ctx pt e.epos) with "dynamic" -> "object" | s -> s))) params;
-			spr ctx ">(");
-		concat ctx "," (gen_value ctx) el;
-		spr ctx ")"
+		(match c.cl_path with
+		| (["cs"],"NativeArray") | (["cs"],"NativeArray2") | (["cs"],"NativeArray3") ->
+			print ctx "new %s[" (type_str ctx (List.hd params) e.epos);
+			concat ctx "," (gen_value ctx) el;
+			spr ctx "]"
+		| (["cs"],"NativeJaggedArray2") | (["cs"],"NativeJaggedArray3") ->
+			print ctx "new %s[" (type_str ctx (List.hd params) e.epos);
+			gen_value ctx (List.hd el);
+			if (snd c.cl_path) = "NativeJaggedArray3" then print ctx "][][]" else print ctx "][]";
+		| _ ->
+			(match params with
+			| [] -> print ctx "new %s(" (s_path ctx true c.cl_path e.epos);
+			| _ -> 
+				print ctx "new %s<" (s_path ctx true c.cl_path e.epos); 
+				concat ctx "," (fun pt -> (print ctx "%s" (match (type_str ctx pt e.epos) with "dynamic" -> "object" | s -> s))) params;
+				spr ctx ">(");
+			concat ctx "," (gen_value ctx) el;
+			spr ctx ")");
 	| TIf (cond,e,eelse) ->
 		spr ctx "if";
 		gen_value ctx (parent cond);
@@ -612,8 +679,8 @@ and gen_expr ctx e =
 		gen_value ctx (parent cond);
 		handle_break();
 	| TObjectDecl fields ->
-		spr ctx "new Dictionary<string,object> { ";
-		concat ctx ", " (fun (f,e) -> print ctx "{ \"%s\", " (s_ident f); gen_value ctx e; spr ctx "}") fields;
+		spr ctx "new { ";
+		concat ctx ", " (fun (f,e) -> print ctx " %s=" (s_ident f); gen_value ctx e) fields;
 		spr ctx "}";
 		ctx.need_semi <- true;
 	| TFor (v,it,e) ->

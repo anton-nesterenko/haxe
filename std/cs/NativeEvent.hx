@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, The haXe Project Contributors
+ * Copyright (c) 2012, The haXe Project Contributors
  * All rights reserved.
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -22,36 +22,15 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
  */
+ 
+package cs;
 
-@:core_api class Std {
+@:final 
+extern class NativeEvent<T> {
 
-	// Always inline this method.
-	@:extern public static inline function is( v : Dynamic, t : Dynamic ) : Bool {
-		return untyped __is__(v,t);
-	}
-
-	public static function string( s : Dynamic ) : String {
-		return untyped s.ToString();
-	}
-
-	public inline static function int( x : Float ) : Int {
-		return untyped __int__(x);
-	}
-
-	public static function parseInt( x : String ) : Null<Int> untyped {
-		return null;
-	}
-
-	public static function parseFloat( x : String ) : Float {
-		return 0.0;
-	}
-
-	public static function random( x : Int ) : Int {
-		return 0;
-	}
-
-	@:macro public static function format( fmt : haxe.macro.Expr.ExprRequire<String> ) : haxe.macro.Expr.ExprRequire<String> {
-		return haxe.macro.Format.format(fmt);
-	}
-
+	public function addHandler( handler : Dynamic->T->Void ) : Void;
+	
+	public function removeHandler( handler : Dynamic->T->Void ) : Void;
+	
+	public function raiseEvent( sender : Dynamic, args : T ) : Void;	
 }

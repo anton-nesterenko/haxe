@@ -33,11 +33,11 @@ class Array<T> {
 
 	public var length(getLength,never):Int;
 
-	private inline function getLength() : Int {
+	@:extern private inline function getLength() : Int {
 		return untyped this.Count;
 	}
 
-	public function concat( a : Array<T>) : Array<T> {
+	public function concat(a : Array<T>) : Array<T> {
 		var a2 = new Array<T>();
 		untyped {
 			a2.AddRange(this);
@@ -127,11 +127,19 @@ class Array<T> {
 		}
 	}
 
-	public function slice( pos : Int, ?end : Int ) : Array<T> {
+	public function slice( pos : Int, ?end : Int) : Array<T> {
+/*		if (end == -1) {
+			end = this.length - 1;
+		}
+		if (pos < 0) {
+			pos = this.length - pos;
+		}
+		return untyped this.GetRange(pos, end); */
 		return null;
 	}
 
-	public function sort(f:T->T->Int) : Void {
+	public inline function sort(f:T->T->Int) : Void {
+		untyped __cs__("Sort((a,b)=>f(a,b));");
 	}
 
 	public function splice( pos : Int, len : Int ) : Array<T> {
