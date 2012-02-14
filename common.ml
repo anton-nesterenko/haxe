@@ -17,6 +17,7 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *)
 open Type
+open ExtString
 
 type package_rule =
 	| Forbidden
@@ -213,6 +214,12 @@ let find_file ctx f =
 	loop ctx.class_path
 
 let get_full_path f = try Extc.get_full_path f with _ -> f
+
+let get_os_path f =
+	match Sys.os_type with 
+	| "Win32" -> String.replace_chars (fun c -> if c == '/' then "\\" else String.make 1 c) f
+	| _ -> f
+
 
 (* ------------------------- TIMERS ----------------------------- *)
 
