@@ -61,6 +61,30 @@ let s_namespace ctx path =
 	| [] -> ctx.root_ns 
 	| _ -> String.concat "." p	
 
+let rec s_cs_binop = function
+	| OpAdd -> "+"
+	| OpMult -> "*"
+	| OpDiv -> "/"
+	| OpSub -> "-"
+	| OpAssign -> "="
+	| OpEq -> "=="
+	| OpNotEq -> "!="
+	| OpGte -> ">="
+	| OpLte -> "<="
+	| OpGt -> ">"
+	| OpLt -> "<"
+	| OpAnd -> "&"
+	| OpOr -> "|"
+	| OpXor -> "^"
+	| OpBoolAnd -> "&&"
+	| OpBoolOr -> "||"
+	| OpShr -> ">>"
+	| OpUShr -> ">>"
+	| OpShl -> "<<"
+	| OpMod -> "%"
+	| OpAssignOp op -> s_cs_binop op ^ "="
+	| OpInterval -> "..."
+
 let add_import ctx path =
 	let pack = (fst path) in
 	let name = protect (snd path) in
@@ -104,8 +128,6 @@ let reserved =
 (* List of default namespaces to be included in every module *)
 let default_namespaces = [
 	(["System"],"*");
-	(["System";"Collections"],"*");
-	(["System";"Collections";"Generic"],"*");
 	]
 
 (* Get a non-keyword identifier *)
@@ -160,6 +182,7 @@ let write_cs_hdr ctx =
 	let this_ns = s_namespace ctx ctx.path in 
 	output_string ctx.ch ("namespace " ^ this_ns ^ " {\n\n");
 	List.iter (fun path -> add_import ctx path) default_namespaces;
+	add_import ctx ([],ctx.root_ns);
 	let ns_list = List.sort (fun a b -> String.compare (String.lowercase a) (String.lowercase b)) ctx.usings in
 	List.iter (fun ns ->
 		if ns <> this_ns then output_string ctx.ch ("\tusing " ^ ns ^ ";\n");
@@ -371,7 +394,12 @@ let gen_function_header ctx name f params p =
 	ctx.local_types <- List.map snd params @ ctx.local_types;
 	let fun_type = (match is_anon || ctx.constructor_block with true -> "" | false -> (type_str ctx f.tf_type p) ^ " ") in
 	let fun_name = (match name with None -> "delegate" | Some (n,_) -> n) in
-	print ctx "%s%s(" fun_type fun_name;
+	print ctx "%s%s" fun_type fun_name;
+	let pnames = List.map fst params in
+	(match params with 
+	| [] -> ()
+	| _ -> print ctx "<%s>" (String.concat "," pnames));
+	spr ctx "(";
 	concat ctx ", " (fun (v,c) ->
 		let tstr = type_str ctx v.v_type p in
 		print ctx "%s %s" tstr (s_ident v.v_name);
@@ -384,7 +412,7 @@ let gen_function_header ctx name f params p =
 					(match c with TNull -> spr ctx (default_value tstr) | _ -> gen_constant ctx p c))
 			| true -> ())
 	) f.tf_args;
-	print ctx ")";
+	spr ctx ")";
 	(fun () ->
 		ctx.in_value <- old;
 		locals();
@@ -498,7 +526,7 @@ and gen_value_op ctx e =
 and gen_field_access ctx t s =
 	let field c =
 		match fst c.cl_path, snd c.cl_path, s with
-		| [], "Math", "NaN"
+		(* | [], "Math", "NaN"
 		| [], "Math", "NEGATIVE_INFINITY"
 		| [], "Math", "POSITIVE_INFINITY"
 		| [], "Math", "isFinite"
@@ -514,7 +542,7 @@ and gen_field_access ctx t s =
 		| [], "String", "cca" ->
 			print ctx ".charCodeAt"
 		| ["flash";"xml"], "XML", "namespace" ->
-			print ctx ".namespace"
+			print ctx ".namespace" *)
 		| _ ->
 			print ctx ".%s" (s_ident s)
 	in
@@ -543,14 +571,25 @@ and gen_expr ctx e =
 		spr ctx "[";
 		gen_value ctx e2;
 		spr ctx "]";
+	| TBinop (OpUShr,e1,e2) ->  (* Handle the >>> operator (which C# doesn't have) *)
+		print ctx "((%s)(((uint)(" (type_str ctx e.etype e.epos);
+		gen_value_op ctx e1;
+		spr ctx "))";
+		spr ctx " >> ";
+		gen_value_op ctx e2;
+		spr ctx "))";
+	| TBinop (OpAssignOp OpUShr,e1,e2) ->  (* Handle x >>>= y by converting to x = x >>> y and recursing *)
+		let e_shr = Type.mk (TBinop (OpUShr,e1,e2)) e1.etype e.epos in
+		let e_as = Type.mk (TBinop (OpAssign,e1,e_shr)) e1.etype e.epos in
+		gen_expr ctx e_as;
 	| TBinop (op,{ eexpr = TField (e1,s) },e2) ->
 		gen_value_op ctx e1;
 		gen_field_access ctx e1.etype s;
-		print ctx " %s " (Ast.s_binop op);
+		print ctx " %s " (s_cs_binop op);
 		gen_value_op ctx e2;
 	| TBinop (op,e1,e2) ->
 		gen_value_op ctx e1;
-		print ctx " %s " (Ast.s_binop op);
+		print ctx " %s " (s_cs_binop op);
 		gen_value_op ctx e2;
 	| TField (e,s) | TClosure (e,s) ->
    		gen_value ctx e;
@@ -1219,7 +1258,8 @@ let generate_build_rsp ctx =
 		| Some mc -> (snd mc);
 		| None -> "Program")) in
 	print ctx "-out:%s\n" out;
-	print ctx "%s\n" (String.concat " " ctx.inf.cs_files)
+	let file_list = List.map (fun a -> get_os_path a) ctx.inf.cs_files in
+	print ctx "%s\n" (String.concat " " file_list)
 		
 let generate com =
 	let infos = {

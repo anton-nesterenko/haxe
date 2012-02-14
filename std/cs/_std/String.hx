@@ -39,7 +39,7 @@ extern class String {
 	}
 
 	public inline function charCodeAt(index : Int) : Null<Int> {
-		return _charCodeAt(this, index);
+		untyped return index < s.Length ? __int__(s[index]) : null;
 	}
 
 	public inline function indexOf( str : String, ?startIndex : Int ) : Int {
@@ -72,10 +72,6 @@ extern class String {
 
 	public static function fromCharCode( code : Int ) : String untyped {
 		return __char__(code).ToString();
-	}
-
-	private static function _charCodeAt(s : String, index : Int) : Null<Int> {
-		untyped return index < s.Length ? __int__(s[index]) : null;
 	}
 
 }

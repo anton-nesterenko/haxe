@@ -259,6 +259,8 @@ class StringTools {
 		return s.cca(index);
 		#elseif flash
 		return s["cca"](index);
+		#elseif cs
+		return untyped (index < s.Length ? __int__(s[index]) : -1);
 		#else
 		return s.cca(index);
 		#end
@@ -276,6 +278,8 @@ class StringTools {
 		return c != c; // fast NaN
 		#elseif neko
 		return c == null;
+		#elseif cs
+		return c == -1;
 		#else
 		return false;
 		#end
