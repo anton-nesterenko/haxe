@@ -41,6 +41,7 @@ type context = {
 	mutable tabs : string;
 	mutable in_value : tvar option;
 	mutable in_static : bool;
+	mutable this_value : tvar option;
 	mutable need_semi : bool;
 	mutable handle_break : bool;
 	mutable imports : (string,string list list) Hashtbl.t;
@@ -106,13 +107,20 @@ let s_path ctx stat path p =
 		| "Dynamic" | "dynamic" -> "dynamic"
 		| "Bool" | "bool" -> "bool"
 		| "Enum" -> "HaxeEnum"
-		| _ -> ctx.root_ns ^ "." ^ name)
+		| _ -> 
+			add_import ctx ([ctx.root_ns],name);			
+			ctx.root_ns ^ "." ^ name)
 	| (["haxe"],"Int32") when not stat ->
 		"int"
 	| (pack,name) ->
 		add_import ctx path;
 		let name = protect name in
-		if (fst path) == (fst ctx.path) then name else Ast.s_type_path (pack,name)
+		Ast.s_type_path (pack,name)
+
+let is_basic_type tstr = 
+	match tstr with
+	| "int" | "uint" | "double" | "float" | "bool" -> true
+	| _ -> false
 
 let reserved =
 	let h = Hashtbl.create 0 in
@@ -120,7 +128,7 @@ let reserved =
 	(* these ones are defined in order to prevent recursion in some Std functions *)
 	["is";"as";"string";"bool";"object";"int";"uint";"byte";"sbyte";"short";"ushort";"long";"ulong";"float";"double";"decimal";"const";"getTimer";"typeof";"parseInt";"parseFloat";
 	(* C# keywords which are not haXe ones *)
-	"each";"label";"finally";"with";"sealed";"internal";"const";"namespace";
+	"each";"label";"finally";"with";"sealed";"internal";"const";"namespace";"params";
 	(* we don't include get+set since they are not 'real' keywords, but they can't be used as method names *)
 	];
 	h
@@ -163,6 +171,7 @@ let init infos path sfile ext =
 		buf = Buffer.create (1 lsl 14);
 		in_value = None;
 		in_static = false;
+		this_value = None;
 		handle_break = false;
 		need_semi = false;
 		imports = Hashtbl.create 0;
@@ -313,7 +322,10 @@ let rec type_str ctx t p =
 			(match args with 
 			| [] -> "Action"
 			| _ -> "Action<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ ">")
-		| _ -> "Func<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ "," ^ (type_str ctx r p) ^ ">")
+		| _ -> 
+			(match args with 
+			| [] -> "Func<" ^ (type_str ctx r p) ^ ">"
+			| _ -> "Func<" ^ (String.concat "," (List.map (fun (_,_,t) -> type_str ctx t p) args)) ^ "," ^ (type_str ctx r p) ^ ">"))
 	| TMono r ->
 		(match !r with None -> "dynamic" | Some t -> type_str ctx t p)
 	| TAnon _ | TDynamic _ ->
@@ -365,7 +377,10 @@ let handle_break ctx e =
 				spr ctx "} catch( Exception e ) { if( e != \"__break__\" ) throw new e; }";
 			)
 
-let this ctx = if ctx.in_value <> None then "__this" else "this"
+let this ctx = 
+	match ctx.this_value with 
+	| Some ths -> ths.v_name 
+	| _ -> "this"
 
 let escape_bin s =
 	let b = Buffer.create 0 in
@@ -402,17 +417,26 @@ let gen_function_header ctx name f params p =
 	spr ctx "(";
 	concat ctx ", " (fun (v,c) ->
 		let tstr = type_str ctx v.v_type p in
-		print ctx "%s %s" tstr (s_ident v.v_name);
+		let ident = s_ident v.v_name in
 		(match is_anon with
 			| false -> (match c with
 				| None ->
+					print ctx "%s %s" tstr ident;
 					if ctx.constructor_block then print ctx " = %s" (default_value tstr);
 				| Some c ->
-					spr ctx " = ";
-					(match c with TNull -> spr ctx (default_value tstr) | _ -> gen_constant ctx p c))
-			| true -> ())
+					let is_basic = is_basic_type tstr in
+					(match (c,is_basic) with 
+					| (TNull,true) -> print ctx "%s? %s = null" tstr ident;
+					| _ -> 
+						print ctx "%s %s = " tstr ident;
+						gen_constant ctx p c))
+			| true -> 
+				print ctx "%s %s" tstr ident)
 	) f.tf_args;
 	spr ctx ")";
+	(match params with 
+	| [] -> ()
+	| _ -> print ctx " %s" (String.concat " " (List.map (fun s -> "where " ^ s ^ " : class") pnames)));
 	(fun () ->
 		ctx.in_value <- old;
 		locals();
@@ -425,7 +449,9 @@ let rec gen_call ctx e el r =
 		spr ctx "(";
 		gen_value ctx e1;
 		spr ctx " is ";
-		gen_value ctx e2;
+		(match e2.eexpr with
+		|	TTypeExpr t -> spr ctx (s_path ctx true (t_path t) e.epos)
+  	| _ -> error "Second parameter of __is__ must be a type" e.epos);
 		spr ctx ")";
 	| TLocal { v_name = "__as__" }, [e1;e2] ->
 		spr ctx "(";
@@ -526,7 +552,7 @@ and gen_value_op ctx e =
 and gen_field_access ctx t s =
 	let field c =
 		match fst c.cl_path, snd c.cl_path, s with
-		(* | [], "Math", "NaN"
+		(*| [], "Math", "NaN"
 		| [], "Math", "NEGATIVE_INFINITY"
 		| [], "Math", "POSITIVE_INFINITY"
 		| [], "Math", "isFinite"
@@ -583,7 +609,9 @@ and gen_expr ctx e =
 		let e_as = Type.mk (TBinop (OpAssign,e1,e_shr)) e1.etype e.epos in
 		gen_expr ctx e_as;
 	| TBinop (op,{ eexpr = TField (e1,s) },e2) ->
-		gen_value_op ctx e1;
+		(match e1.eexpr with
+		|	TTypeExpr t -> spr ctx (s_path ctx true (t_path t) e.epos)
+  	| _ -> gen_value_op ctx e1);
 		gen_field_access ctx e1.etype s;
 		print ctx " %s " (s_cs_binop op);
 		gen_value_op ctx e2;
@@ -592,10 +620,13 @@ and gen_expr ctx e =
 		print ctx " %s " (s_cs_binop op);
 		gen_value_op ctx e2;
 	| TField (e,s) | TClosure (e,s) ->
-   		gen_value ctx e;
+		(match e.eexpr with
+		|	TTypeExpr t -> spr ctx (s_path ctx true (t_path t) e.epos)
+  	| _ -> gen_value ctx e);
 		gen_field_access ctx e.etype s
 	| TTypeExpr t ->
-		spr ctx (s_path ctx true (t_path t) e.epos)
+		add_import ctx (["cs"],"HaxeClass");
+		print ctx "cs.HaxeClass.getClass(typeof(%s))" (s_path ctx true (t_path t) e.epos)
 	| TParenthesis e ->
 		spr ctx "(";
 		gen_value ctx e;
@@ -639,6 +670,9 @@ and gen_expr ctx e =
 		print ctx "}";
 		b();
 	| TFunction f ->
+		let args = List.map (fun a -> ("",false,(fst a).v_type)) f.tf_args in
+		let dt = TFun (args,f.tf_type) in
+		print ctx "(%s)" (type_str ctx dt e.epos);
 		let h = gen_function_header ctx None f [] e.epos in
 		let old = ctx.in_static in
 		ctx.in_static <- true;
@@ -648,7 +682,7 @@ and gen_expr ctx e =
 	| TCall (v,el) ->
 		gen_call ctx v el e.etype
 	| TArrayDecl el ->
-		spr ctx "{";
+		spr ctx "new [] {";
 		concat ctx "," (gen_value ctx) el;
 		spr ctx "}";
 		ctx.need_semi <- true;
@@ -726,7 +760,7 @@ and gen_expr ctx e =
 		let handle_break = handle_break ctx e in
 		let b = save_locals ctx in
 		let tmp = gen_local ctx "__it" in
-		print ctx "{ dynamic %s = " tmp;
+		print ctx "{ var %s = " tmp;
 		gen_value ctx it;
 		newline ctx;
 		print ctx "while( %s.hasNext() ) { %s %s = %s.next()" tmp (type_str ctx v.v_type e.epos) (s_ident v.v_name) tmp;
@@ -750,7 +784,7 @@ and gen_expr ctx e =
 		newline ctx;
 		let b = save_locals ctx in
 		let tmp = gen_local ctx "__e" in
-		print ctx "HaxeEnum %s = " tmp;
+		print ctx "var %s = " tmp;
 		gen_value ctx e;
 		newline ctx;
 		print ctx "switch( %s.index ) {" tmp;
@@ -847,14 +881,17 @@ and gen_value ctx e =
 	(* We do this by defining an inline lambda and calling it. *)
 	let value block =
 		let old = ctx.in_value in
+		let old_this = ctx.this_value in
 		let t = type_str ctx e.etype e.epos in
 		let locs = save_locals ctx in
 		let r = alloc_var (gen_local ctx "__r") e.etype in
 		ctx.in_value <- Some r;
+		let ths = alloc_var (gen_local ctx "__this") e.etype in
+		ctx.this_value <- Some ths;
 		if ctx.in_static then
 			print ctx "((Func<%s>)(() => " t
 		else
-			print ctx "((Func<%s,%s>)((%s __this) => " (snd ctx.path) t (snd ctx.path);
+			print ctx "((Func<%s,%s>)((%s %s) => " (snd ctx.path) t (snd ctx.path) ths.v_name;
 		let b = if block then begin
 			spr ctx "{";
 			let b = open_block ctx in
@@ -874,6 +911,7 @@ and gen_value ctx e =
 				spr ctx "}";
 			end;
 			ctx.in_value <- old;
+			ctx.this_value <- old_this;
 			locs();
 			if ctx.in_static then
 				print ctx "))()"
@@ -996,8 +1034,7 @@ let generate_field ctx static f =
 	ctx.in_static <- static;
 	ctx.gen_uid <- 0;
 	generate_meta ctx f;
-	let public = f.cf_public || Hashtbl.mem ctx.get_sets (f.cf_name,static) || (f.cf_name = "main" && static) || f.cf_name = "resolve" in
-	let rights = (if static then "static " else "") ^ (if public then "public" else "protected") in
+	let rights = (if static then "static " else "") ^ "public" in
 	let p = ctx.curclass.cl_pos in
 	match f.cf_expr, f.cf_kind with
 	| Some { eexpr = TFunction fd }, Method (MethNormal | MethInline) ->
@@ -1068,7 +1105,7 @@ let generate_field ctx static f =
 			| AccCall m ->
 				print ctx "set { %s(value); }" m;
 			| AccNo ->
-				print ctx "%s set { __%s = value; }" (if v.v_write = AccNo then "protected" else "private") id;
+				print ctx "set { __%s = value; }" id;
 			| _ -> ());
 			b();
 			newline ctx;
@@ -1240,6 +1277,8 @@ let generate_base_enum ctx =
 	newline ctx;
 	print ctx "}";
 	pack();
+	newline ctx;
+	spr ctx "\tpublic class HaxeEnum<T> : HaxeEnum {}";
 	newline ctx;
 	print ctx "}";
 	newline ctx

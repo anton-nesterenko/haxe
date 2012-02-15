@@ -25,6 +25,7 @@
 package cs;
 
 import cs.Lib;
+import cs.HaxeClass;
 
 class Boot {
 

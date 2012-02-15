@@ -22,44 +22,10 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
  */
-package haxe;
 
-class Log {
-
-	public static dynamic function trace( v : Dynamic, ?infos : PosInfos ) : Void {
-		#if flash
-			#if (fdb || nativeTrace)
-		var pstr = infos == null ? "(null)" : infos.fileName+":"+infos.lineNumber;
-		untyped __global__["trace"](pstr+": "+flash.Boot.__string_rec(v,""));
-			#else
-		untyped flash.Boot.__trace(v,infos);
-			#end
-		#elseif neko
-		untyped __dollar__print(infos.fileName+":"+infos.lineNumber+": ",v,"\n");
-		#elseif js
-		untyped js.Boot.__trace(v,infos);
-		#elseif cs
-		untyped System.Diagnostics.Debug.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
-		untyped System.Console.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
-		#elseif php
-		untyped __call__('_hx_trace', v,infos);
-		#elseif cpp
-		untyped __trace(v,infos);
-		#end
-	}
-
-	public static dynamic function clear() : Void {
-		#if flash
-		untyped flash.Boot.__clear_trace();
-		#elseif js
-		untyped js.Boot.__clear_trace();
-		#end
-	}
-
-	#if flash
-	public static dynamic function setColor( rgb : Int ) {
-		untyped flash.Boot.__set_trace_color(rgb);
-	}
-	#end
-
+/**
+	An abstract type that represents a Class.
+	See [Type] for the haXe Reflection API.
+**/
+class Class<T> {
 }
