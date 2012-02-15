@@ -22,44 +22,37 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
  */
-package haxe;
 
-class Log {
+@:core_api class Hash<T> {
 
-	public static dynamic function trace( v : Dynamic, ?infos : PosInfos ) : Void {
-		#if flash
-			#if (fdb || nativeTrace)
-		var pstr = infos == null ? "(null)" : infos.fileName+":"+infos.lineNumber;
-		untyped __global__["trace"](pstr+": "+flash.Boot.__string_rec(v,""));
-			#else
-		untyped flash.Boot.__trace(v,infos);
-			#end
-		#elseif neko
-		untyped __dollar__print(infos.fileName+":"+infos.lineNumber+": ",v,"\n");
-		#elseif js
-		untyped js.Boot.__trace(v,infos);
-		#elseif cs
-		untyped System.Diagnostics.Debug.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
-		untyped System.Console.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
-		#elseif php
-		untyped __call__('_hx_trace', v,infos);
-		#elseif cpp
-		untyped __trace(v,infos);
-		#end
+	public function new() : Void {
+	}
+	
+	public function set( key : String, value : T ) : Void {
 	}
 
-	public static dynamic function clear() : Void {
-		#if flash
-		untyped flash.Boot.__clear_trace();
-		#elseif js
-		untyped js.Boot.__clear_trace();
-		#end
+	public function get( key : String ) : Null<T> {
+		return null;
 	}
 
-	#if flash
-	public static dynamic function setColor( rgb : Int ) {
-		untyped flash.Boot.__set_trace_color(rgb);
+	public function exists( key : String ) : Bool {
+		return false;
 	}
-	#end
+
+	public function remove( key : String ) : Bool {
+		return true;
+	}
+
+	public function keys() : Iterator<String> {
+		return null;
+	}
+
+	public function iterator() : Iterator<T> {
+		return null;
+	}
+
+	public function toString() : String {
+		return null;
+	}
 
 }

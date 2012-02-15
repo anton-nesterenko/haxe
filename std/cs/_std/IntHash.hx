@@ -22,44 +22,68 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
  */
-package haxe;
 
-class Log {
+/**
+	Hashtable over a set of elements, using [Int] as keys.
+	On Flash and Javascript, the underlying structure is an Object.
+**/
+@:core_api class IntHash<T> {
 
-	public static dynamic function trace( v : Dynamic, ?infos : PosInfos ) : Void {
-		#if flash
-			#if (fdb || nativeTrace)
-		var pstr = infos == null ? "(null)" : infos.fileName+":"+infos.lineNumber;
-		untyped __global__["trace"](pstr+": "+flash.Boot.__string_rec(v,""));
-			#else
-		untyped flash.Boot.__trace(v,infos);
-			#end
-		#elseif neko
-		untyped __dollar__print(infos.fileName+":"+infos.lineNumber+": ",v,"\n");
-		#elseif js
-		untyped js.Boot.__trace(v,infos);
-		#elseif cs
-		untyped System.Diagnostics.Debug.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
-		untyped System.Console.WriteLine(infos.fileName+":"+infos.lineNumber+": "+v.ToString());
-		#elseif php
-		untyped __call__('_hx_trace', v,infos);
-		#elseif cpp
-		untyped __trace(v,infos);
-		#end
+	/**
+		Creates a new empty hashtable.
+	**/
+	public function new() : Void {
 	}
 
-	public static dynamic function clear() : Void {
-		#if flash
-		untyped flash.Boot.__clear_trace();
-		#elseif js
-		untyped js.Boot.__clear_trace();
-		#end
+	/**
+		Set a value for the given key.
+	**/
+	public function set( key : Int, value : T ) : Void {
+	}
+	
+	/**
+		Get a value for the given key.
+	**/
+	public function get( key : Int ) : Null<T> {
+		return null;
 	}
 
-	#if flash
-	public static dynamic function setColor( rgb : Int ) {
-		untyped flash.Boot.__set_trace_color(rgb);
+	/**
+		Tells if a value exists for the given key.
+		In particular, it's useful to tells if a key has
+		a [null] value versus no value.
+	**/
+	public function exists( key : Int ) : Bool {
+		return false;
 	}
-	#end
+
+	/**
+		Removes a hashtable entry. Returns [true] if
+		there was such entry.
+	**/
+	public function remove( key : Int ) : Bool {
+		return false;
+	}
+
+	/**
+		Returns an iterator of all keys in the hashtable.
+	**/
+	public function keys() : Iterator<Int> {
+		return null;
+	}
+
+	/**
+		Returns an iterator of all values in the hashtable.
+	**/
+	public function iterator() : Iterator<T> {
+		return null;
+	}
+
+	/**
+		Returns an displayable representation of the hashtable content.
+	**/
+	public function toString() : String {
+		return null;
+	}
 
 }
