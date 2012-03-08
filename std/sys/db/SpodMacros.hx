@@ -139,8 +139,12 @@ class SpodMacros {
 		case TInst(c, p):
 			var name = c.toString();
 			var cl = c.get();
-			if( cl.superClass != null && cl.superClass.t.toString() == "sys.db.Object" )
-				return name;
+			var csup = cl.superClass;
+			while( csup != null ) {
+				if( csup.t.toString() == "sys.db.Object" )
+					return name;
+				csup = csup.t.get().superClass;
+			}
 		case TType(t, p):
 			var name = t.toString();
 			if( p.length == 1 && (name == "Null" || name == "sys.db.SNull") ) {
@@ -230,7 +234,15 @@ class SpodMacros {
 		};
 		var c = c.get();
 		var fieldsPos = new Hash();
-		for( f in c.fields.get() ) {
+		var fields = c.fields.get();
+		var csup = c.superClass;
+		while( csup != null ) {
+			var c = csup.t.get();
+			if( !c.meta.has(":skipFields") )
+				fields = fields.concat(c.fields.get());
+			csup = c.superClass;
+		}
+		for( f in fields ) {
 			fieldsPos.set(f.name, f.pos);
 			switch( f.kind ) {
 			case FMethod(_):
@@ -492,7 +504,7 @@ class SpodMacros {
 				if( i.charCodeAt(0) == "$".code ) {
 					var tmp = { field : i.substr(1), expr : e2 };
 					var f = getField(tmp);
-					r1 = { sql : makeString(tmp.field, e1.pos), t : f.t, n : f.isNull };
+					r1 = { sql : makeString(quoteField(tmp.field), e1.pos), t : f.t, n : f.isNull };
 					e2 = tmp.expr;
 				}
 			default:

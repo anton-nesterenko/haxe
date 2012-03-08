@@ -392,7 +392,8 @@ and type_name = parser
 		error (Custom "Type name should start with an uppercase letter") p
 
 and parse_type_path_or_const = parser
-	| [< '(POpen,_); e = expr; '(PClose,_) >] -> TPExpr e
+	(* we can't allow (expr) here *)
+	| [< '(BkOpen,p1); l = parse_array_decl; '(BkClose,p2); s >] -> TPExpr (EArrayDecl l, punion p1 p2)
 	| [< t = parse_complex_type >] -> TPType t
 	| [< '(Const c,p) >] -> TPExpr (EConst c,p)
 	| [< e = expr >] -> TPExpr e
@@ -829,13 +830,13 @@ let parse ctx code =
 			next_token()
 		| Macro "end" ->
 			(match !mstack with
-			| [] -> raise Exit
+			| [] -> tk
 			| _ :: l ->
 				mstack := l;
 				next_token())
 		| Macro "else" | Macro "elseif" ->
 			(match !mstack with
-			| [] -> raise Exit
+			| [] -> tk
 			| _ :: l ->
 				mstack := l;
 				process_token (skip_tokens (snd tk) false))
@@ -887,7 +888,7 @@ let parse ctx code =
 		| Macro "if" ->
 			skip_tokens_loop p test (skip_tokens p false)
 		| Eof ->
-			error Unclosed_macro p
+			if do_resume() then tk else error Unclosed_macro p
 		| _ ->
 			skip_tokens p test
 
@@ -895,16 +896,13 @@ let parse ctx code =
 
 	in
 	let s = Stream.from (fun _ ->
-		try
-			let t = next_token() in
-			DynArray.add (!cache) t;
-			Some t
-		with
-			Exit -> None
+		let t = next_token() in
+		DynArray.add (!cache) t;
+		Some t
 	) in
 	try
 		let l = parse_file s in
-		(match !mstack with [] -> () | p :: _ -> error Unclosed_macro p);
+		(match !mstack with p :: _ when not (do_resume()) -> error Unclosed_macro p | _ -> ());
 		cache := old_cache;
 		Lexer.restore old;
 		l

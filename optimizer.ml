@@ -22,6 +22,33 @@ open Common
 open Typecore
 
 (* ---------------------------------------------------------------------- *)
+(* API OPTIMIZATIONS *)
+
+let has_side_effect e =
+	let rec loop e =
+		match e.eexpr with
+		| TConst _ | TLocal _ | TEnumField _ | TTypeExpr _ | TFunction _ -> ()
+		| TMatch _ | TNew _ | TCall _ | TClosure _ | TField _ | TArray _ | TBinop ((OpAssignOp _ | OpAssign),_,_) | TUnop ((Increment|Decrement),_,_) -> raise Exit
+		| TReturn _ | TBreak | TContinue | TThrow _ | TCast (_,Some _) -> raise Exit
+		| TCast (_,None) | TBinop _ | TUnop _ | TParenthesis _ | TWhile _ | TFor _ | TIf _ | TTry _ | TSwitch _ | TArrayDecl _ | TVars _ | TBlock _ | TObjectDecl _ -> Type.iter loop e
+	in
+	try
+		loop e; false
+	with Exit ->
+		true
+
+let api_inline ctx c field params p =
+	match c.cl_path, field, params with
+	| ([],"Type"),"enumIndex",[{ eexpr = TEnumField (en,f) }] ->
+		let c = (try PMap.find f en.e_constrs with Not_found -> assert false) in
+		Some (mk (TConst (TInt (Int32.of_int c.ef_index))) ctx.t.tint p)
+	| ([],"Type"),"enumIndex",[{ eexpr = TCall({ eexpr = TEnumField (en,f) },pl) }] when List.for_all (fun e -> not (has_side_effect e)) pl ->
+		let c = (try PMap.find f en.e_constrs with Not_found -> assert false) in
+		Some (mk (TConst (TInt (Int32.of_int c.ef_index))) ctx.t.tint p)
+	| _ ->
+		None
+
+(* ---------------------------------------------------------------------- *)
 (* INLINING *)
 
 type in_local = {
@@ -32,6 +59,17 @@ type in_local = {
 }
 
 let rec type_inline ctx cf f ethis params tret p force =
+	(* perform some specific optimization before we inline the call since it's not possible to detect at final optimization time *)
+	try
+		let cl = (match follow ethis.etype with
+			| TInst (c,_) -> c
+			| TAnon a -> (match !(a.a_status) with Statics c -> c | _ -> raise Exit)
+			| _ -> raise Exit
+		) in
+		(match api_inline ctx cl cf.cf_name params p with
+		| None -> raise Exit
+		| Some e -> Some e)
+	with Exit ->
 	(* type substitution on both class and function type parameters *)
 	let has_params, map_type =
 		let rec get_params c pl =
@@ -113,6 +151,7 @@ let rec type_inline ctx cf f ethis params tret p force =
 	in
 	let has_vars = ref false in
 	let in_loop = ref false in
+	let cancel_inlining = ref false in
 	let rec map term e =
 		let po = e.epos in
 		let e = { e with epos = p } in
@@ -120,6 +159,9 @@ let rec type_inline ctx cf f ethis params tret p force =
 		| TLocal v ->
 			let l = read_local v in
 			l.i_read <- l.i_read + (if !in_loop then 2 else 1);
+			(* never inline a function which contain a delayed macro because its bound
+				to its variables and not the calling method *)
+			if v.v_name = "__dollar__delay_call" then cancel_inlining := true;
 			{ e with eexpr = TLocal l.i_subst }
 		| TConst TThis ->
 			let l = read_local vthis in
@@ -162,8 +204,9 @@ let rec type_inline ctx cf f ethis params tret p force =
 			{ e with eexpr = TMatch (map false v,en,cases,opt (map term) def); etype = !t }
 		| TTry (e1,catches) ->
 			{ e with eexpr = TTry (map term e1,List.map (fun (v,e) ->
+				let lv = (local v).i_subst in
 				let e = map term e in
-				(local v).i_subst,e
+				lv,e
 			) catches) }
 		| TBlock l ->
 			let old = save_locals ctx in
@@ -236,7 +279,7 @@ let rec type_inline ctx cf f ethis params tret p force =
 
 		This could be fixed with better post process code cleanup (planed)
 	*)
-	if Common.platform ctx.com Js && not force && (init <> None || !has_vars) then begin
+	if !cancel_inlining || (Common.platform ctx.com Js && not force && (init <> None || !has_vars)) then begin
 		None
 	end else
 		let wrap e =
@@ -593,7 +636,7 @@ let rec reduce_loop ctx e =
 				)
 			in
 			let ebool t =
-				{ e with eexpr = TConst (TBool (t (Int32.compare b a))) }
+				{ e with eexpr = TConst (TBool (t (Int32.compare a b) 0)) }
 			in
 			(match op with
 			| OpAdd -> check_overflow Int64.add
@@ -606,12 +649,12 @@ let rec reduce_loop ctx e =
 			| OpShl -> opt (fun a b -> Int32.shift_left a (Int32.to_int b))
 			| OpShr -> opt (fun a b -> Int32.shift_right a (Int32.to_int b))
 			| OpUShr -> opt (fun a b -> Int32.shift_right_logical a (Int32.to_int b))
-			| OpEq -> ebool ((=) 0)
-			| OpNotEq -> ebool ((<>) 0)
-			| OpGt -> ebool ((>) 0)
-			| OpGte -> ebool ((>=) 0)
-			| OpLt -> ebool ((<) 0)
-			| OpLte -> ebool ((<=) 0)
+			| OpEq -> ebool (=)
+			| OpNotEq -> ebool (<>)
+			| OpGt -> ebool (>)
+			| OpGte -> ebool (>=)
+			| OpLt -> ebool (<)
+			| OpLte -> ebool (<=)
 			| _ -> e)
 		| TConst ((TFloat _ | TInt _) as ca), TConst ((TFloat _ | TInt _) as cb) ->
 			let fa = (match ca with
@@ -626,19 +669,19 @@ let rec reduce_loop ctx e =
 			) in
 			let fop op = check_float op fa fb in
 			let ebool t =
-				{ e with eexpr = TConst (TBool (t (compare fa fb))) }
+				{ e with eexpr = TConst (TBool (t (compare fa fb) 0)) }
 			in
 			(match op with
 			| OpAdd -> fop (+.)
 			| OpDiv -> fop (/.)
 			| OpSub -> fop (-.)
 			| OpMult -> fop ( *. )
-			| OpEq -> ebool ((=) 0)
-			| OpNotEq -> ebool ((<>) 0)
-			| OpGt -> ebool ((>) 0)
-			| OpGte -> ebool ((>=) 0)
-			| OpLt -> ebool ((<) 0)
-			| OpLte -> ebool ((<=) 0)
+			| OpEq -> ebool (=)
+			| OpNotEq -> ebool (<>)
+			| OpGt -> ebool (>)
+			| OpGte -> ebool (>=)
+			| OpLt -> ebool (<)
+			| OpLte -> ebool (<=)
 			| _ -> e)
 		| TConst (TBool a), TConst (TBool b) ->
 			let ebool f =
@@ -693,6 +736,10 @@ let rec reduce_loop ctx e =
 				e
 		| _ -> e
 		)
+	| TCall ({ eexpr = TField ({ eexpr = TTypeExpr (TClassDecl c) },field) },params) ->
+		(match api_inline ctx c field params e.epos with
+		| None -> reduce_expr ctx e
+		| Some e -> reduce_loop ctx e)
 	| TCall ({ eexpr = TFunction func } as ef,el) ->
 		let cf = mk_field "" ef.etype e.epos in
 		let ethis = mk (TConst TThis) t_dynamic e.epos in
@@ -706,28 +753,3 @@ let rec reduce_loop ctx e =
 
 let reduce_expression ctx e =
 	if ctx.com.foptimize then reduce_loop ctx e else e
-
-(* ---------------------------------------------------------------------- *)
-(* ELIMINATE DEAD CODE *)
-
-(*
-	if dead code elimination is on, any class without fields is eliminated from the output.
-*)
-
-let filter_dead_code com =
-	let s_class c = s_type_path c.cl_path in
-	com.types <- List.filter (fun t ->
-		match t with
-		| TClassDecl c ->
-			if (c.cl_extern or has_meta ":keep" c.cl_meta) then
-				true
-			else (
-				match (c.cl_ordered_statics, c.cl_ordered_fields, c.cl_constructor) with
-				| ([], [], None) ->
-					if com.verbose then print_endline ("Remove class " ^ s_class c);
-					false
-				| _ ->
-					true)
-		| _ ->
-			true
-	) com.types

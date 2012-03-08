@@ -30,7 +30,7 @@ import haxe.macro.Type.ClassField;
 import haxe.macro.Context;
 #end
 
-typedef Config = {
+typedef DispatchConfig = {
 	var obj : Dynamic;
 	var rules : Dynamic;
 }
@@ -71,7 +71,7 @@ class Dispatch {
 	public var parts : Array<String>;
 	public var params : Hash<String>;
 	public var name : String;
-	public var cfg : Config;
+	public var cfg : DispatchConfig;
 
 	public function new(url:String, params) {
 		parts = url.split("/");
@@ -106,7 +106,7 @@ class Dispatch {
 		return name;
 	}
 
-	public function runtimeDispatch( cfg : Config ) {
+	public function runtimeDispatch( cfg : DispatchConfig ) {
 		name = parts.shift();
 		if( name == null )
 			name = "default";
@@ -144,15 +144,17 @@ class Dispatch {
 		return checkParams(GET_RULES[cfgIndex], true);
 	}
 
-	function match( v : String, r : MatchRule ) : Dynamic {
+	function match( v : String, r : MatchRule, opt : Bool ) : Dynamic {
 		switch( r ) {
 		case MRInt:
 			if( v == null ) throw DEMissing;
+			if( opt && v == "" ) return null;
 			var v = Std.parseInt(v);
 			if( v == null ) throw DEInvalidValue;
 			return v;
 		case MRFloat:
 			if( v == null ) throw DEMissing;
+			if( opt && v == "" ) return null;
 			var v = Std.parseFloat(v);
 			if( Math.isNaN(v) ) throw DEInvalidValue;
 			return v;
@@ -169,20 +171,20 @@ class Dispatch {
 			if( v == null ) throw DEMissing;
 			var v = Std.parseInt(v);
 			if( v == null ) throw DEInvalidValue;
-			var cl = Type.resolveClass(c);
+			var cl : Dynamic = Type.resolveClass(c);
 			if( cl == null ) throw "assert";
 			var o : Dynamic;
 			#if spod_macro
-			o = untyped cl.manager.unsafeGet(v, lock);
+			o = cl.manager.unsafeGet(v, lock);
 			#else
-			o = untyped cl.manager.get(v, lock);
+			o = cl.manager.get(v, lock);
 			#end
 			if( o == null ) throw DEInvalidValue;
 			return o;
 		case MROpt(r) :
 			if( v == null )
 				return null;
-			return match(v, r);
+			return match(v, r, true);
 		}
 	}
 
@@ -195,7 +197,7 @@ class Dispatch {
 				if( opt ) return null;
 				throw DEMissingParam(p.name);
 			}
-			Reflect.setField(po, p.name, match(v, p.rule));
+			Reflect.setField(po, p.name, match(v, p.rule,p.opt));
 		}
 		return po;
 	}
@@ -206,10 +208,10 @@ class Dispatch {
 			loop(args, r);
 			args.push( checkParams(params, opt) );
 		case DRMatch(r):
-			args.push(match(parts.shift(), r));
+			args.push(match(parts.shift(), r, false));
 		case DRMult(rl):
 			for( r in rl )
-				args.push(match(parts.shift(), r));
+				args.push(match(parts.shift(), r, false));
 		case DRMeta(r):
 			loop(args, r);
 			var c = Type.getClass(cfg.obj);
@@ -239,12 +241,17 @@ class Dispatch {
 				return MRDispatch;
 			default:
 				var c = i.get();
-				if( c.superClass != null && (c.superClass.t.toString() == "neko.db.Object" || c.superClass.t.toString() == "sys.db.Object") ) {
-					var lock = switch( t ) {
-					case TType(t, _): t.get().name == "Lock";
-					default: false;
+				var csup = c.superClass;
+				while( csup != null ) {
+					var name = csup.t.toString();
+					if( name == "neko.db.Object" || name == "sys.db.Object" ) {
+						var lock = switch( t ) {
+						case TType(t, _): t.get().name == "Lock";
+						default: false;
+						}
+						return MRSpod(i.toString(), lock);
 					}
-					return MRSpod(i.toString(), lock);
+					csup = csup.t.get().superClass;
 				}
 				Context.error("Unsupported dispatch type '"+i.toString()+"'",p);
 			}
@@ -369,6 +376,7 @@ class Dispatch {
 		switch( Context.getType("haxe.web.Dispatch") ) {
 		case TInst(c, _):
 			var c = c.get();
+			c.meta.remove("getParams");
 			c.meta.add("getParams",[{ expr : EConst(CString(str)), pos : c.pos }],c.pos);
 		default:
 		}
@@ -390,7 +398,7 @@ class Dispatch {
 
 	#end
 
-	@:macro public static function make( obj : ExprRequire<{}> ) : ExprRequire<Config> {
+	@:macro public static function make( obj : ExprRequire<{}> ) : ExprRequire<DispatchConfig> {
 		return makeConfig(obj);
 	}
 
@@ -400,7 +408,7 @@ class Dispatch {
 		return { expr : ECall({ expr : EField({ expr : ENew({ name : "Dispatch", pack : ["haxe","web"], params : [], sub : null },[url,params]), pos : p },"runtimeDispatch"), pos : p },[cfg]), pos : p };
 	}
 
-	static function extractConfig( obj : Dynamic ) : Config {
+	static function extractConfig( obj : Dynamic ) : DispatchConfig {
 		// extract the config from the class metadata (cache result)
 		var c = Type.getClass(obj);
 		var dc = haxe.rtti.Meta.getType(c);

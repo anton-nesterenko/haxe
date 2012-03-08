@@ -28,10 +28,10 @@ package sys.db;
 	SPOD Object : the persistent object base type. See the tutorial on haXe
 	website to learn how to use SPOD.
 **/
-@:autoBuild(sys.db.SpodMacros.macroBuild())
+@:autoBuild(sys.db.SpodMacros.macroBuild()) @:skipFields
 class Object {
 
-	var _locked(default,never) : Bool;
+	var _lock(default,never) : Bool;
 	var _manager(default,never) : sys.db.Manager<Dynamic>;
 
 	public function new() {
@@ -54,6 +54,10 @@ class Object {
 
 	public function delete() {
 		untyped _manager.doDelete(this);
+	}
+
+	public function isLocked() {
+		return _lock;
 	}
 
 	public function toString() : String {

@@ -33,9 +33,8 @@
 		return untyped js.Boot.__string_rec(s,"");
 	}
 
-	public static function int( x : Float ) : Int {
-		if( x < 0 ) return Math.ceil(x);
-		return Math.floor(x);
+	public static inline function int( x : Float ) : Int {
+		return cast(x) | 0;
 	}
 
 	public static function parseInt( x : String ) : Null<Int> {
@@ -69,7 +68,8 @@
 		Dynamic = $hxClasses['Dynamic'] = { __name__ : ["Dynamic"] };
 		Float = $hxClasses['Float'] = __js__("Number");
 		Float.__name__ = ["Float"];
-		Bool = $hxClasses['Bool'] = { __ename__ : ["Bool"] };
+		Bool = $hxClasses['Bool'] = __js__("Boolean");
+		Bool.__ename__ = ["Bool"];
 		Class = $hxClasses['Class'] = { __name__ : ["Class"] };
 		Enum = {};
 		Void = $hxClasses['Void'] = { __ename__ : ["Void"] };

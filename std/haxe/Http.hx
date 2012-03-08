@@ -136,7 +136,7 @@ class Http {
 				uri = "";
 			else
 				uri += "&";
-			uri += StringTools.urlDecode(p)+"="+StringTools.urlEncode(params.get(p));
+			uri += StringTools.urlEncode(p)+"="+StringTools.urlEncode(params.get(p));
 		}
 		try {
 			if( post )
@@ -390,13 +390,11 @@ class Http {
 			b.add(headers.get(h));
 			b.add("\r\n");
 		}
+		b.add("\r\n");
 		if( postData != null)
 			b.add(postData);
-		else {
-			b.add("\r\n");
-			if( post && uri != null )
-				b.add(uri);
-		}
+		else if( post && uri != null )
+			b.add(uri);
 		try {
 			if( Http.PROXY != null )
 				sock.connect(new Host(Http.PROXY.host),Http.PROXY.port);

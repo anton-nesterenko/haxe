@@ -287,4 +287,14 @@
 		return a;
 	}
 
+	#if !macro
+	static function __init__() : Void {
+		try {
+			var msort : Dynamic = neko.Lib.load("std","merge_sort",3);
+			untyped Array.prototype.sort = function(cmp) msort(__this__.__a,__this__.length,cmp);
+		} catch( e : Dynamic ) {
+		}
+	}
+	#end
+
 }

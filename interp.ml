@@ -16,6 +16,7 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *)
+open Common
 open Nast
 open Unix
 open Type
@@ -87,13 +88,10 @@ type cmp =
 
 type extern_api = {
 	pos : Ast.pos;
-	on_error : string -> Ast.pos -> bool -> unit;
-	define : string -> unit;
-	defined : string -> bool;
+	get_com : unit -> Common.context;
 	get_type : string -> Type.t option;
 	get_module : string -> Type.t list;
 	on_generate : (Type.t list -> unit) -> unit;
-	print : string -> unit;
 	parse_string : string -> Ast.pos -> Ast.expr;
 	typeof : Ast.expr -> Type.t;
 	type_patch : string -> string -> bool -> string option -> unit;
@@ -127,6 +125,7 @@ type context = {
 	(* runtime *)
 	mutable stack : value DynArray.t;
 	mutable callstack : callstack list;
+	mutable callsize : int;
 	mutable exc : pos list;
 	mutable vthis : value;
 	mutable venv : value array;
@@ -533,6 +532,7 @@ let builtins =
 			VArray (Array.map (fun (fid,_) -> VInt fid) (vobj o).ofields)
 		);
 		"hash", Fun1 (fun v -> VInt (hash_field (get_ctx()) (vstring v)));
+		"fasthash", Fun1 (fun v -> VInt (hash (vstring v)));
 		"field", Fun1 (fun v ->
 			try VString (Hashtbl.find (get_ctx()).fields_cache (vint v)) with Not_found -> VNull
 		);
@@ -658,7 +658,9 @@ let builtins =
 	(* misc *)
 		"print", FunVar (fun vl -> List.iter (fun v ->
 			let ctx = get_ctx() in
-			ctx.curapi.print (ctx.do_string v)
+			let com = ctx.curapi.get_com() in
+			let str = ctx.do_string v in
+			if not com.display then print_string str
 		) vl; VNull);
 		"throw", Fun1 (fun v -> exc v);
 		"rethrow", Fun1 (fun v ->
@@ -1688,35 +1690,41 @@ let macro_lib =
 	let error() =
 		raise Builtin_error
 	in
+	let ccom() =
+		(get_ctx()).curapi.get_com()
+	in
 	make_library [
 		"curpos", Fun0 (fun() -> VAbstract (APos (get_ctx()).curapi.pos));
 		"error", Fun2 (fun msg p ->
 			match msg, p with
-			| VString s, VAbstract (APos p) -> (get_ctx()).curapi.on_error s p false; raise Abort
+			| VString s, VAbstract (APos p) ->
+				(ccom()).Common.error s p;
+				raise Abort
 			| _ -> error()
 		);
 		"warning", Fun2 (fun msg p ->
 			match msg, p with
-			| VString s, VAbstract (APos p) -> (get_ctx()).curapi.on_error s p true; VNull;
+			| VString s, VAbstract (APos p) ->
+				(ccom()).warning s p;
+				VNull;
 			| _ -> error()
 		);
 		"class_path", Fun0 (fun() ->
-			let cp = (get_ctx()).com.Common.class_path in
-			VArray (Array.of_list (List.map (fun s -> VString s) cp));
+			VArray (Array.of_list (List.map (fun s -> VString s) (ccom()).class_path));
 		);
 		"resolve", Fun1 (fun file ->
 			match file with
-			| VString s -> VString (try Common.find_file (get_ctx()).com s with Not_found -> failwith ("File not found '" ^ s ^ "'"))
+			| VString s -> VString (try Common.find_file (ccom()) s with Not_found -> failwith ("File not found '" ^ s ^ "'"))
 			| _ -> error();
 		);
 		"define", Fun1 (fun s ->
 			match s with
-			| VString s -> (get_ctx()).curapi.define s; VNull
+			| VString s -> Common.define (ccom()) s; VNull
 			| _ -> error();
 		);
 		"defined", Fun1 (fun s ->
 			match s with
-			| VString s -> VBool ((get_ctx()).curapi.defined s)
+			| VString s -> VBool (Common.defined (ccom()) s)
 			| _ -> error();
 		);
 		"get_type", Fun1 (fun s ->
@@ -1908,9 +1916,7 @@ let macro_lib =
 		);
 		"add_resource", Fun2 (fun name data ->
 			match name, data with
-			| VString name, VString data ->
-				(* ressources are shared between the commons *)
-				Hashtbl.replace (get_ctx()).com.Common.resources name data; VNull
+			| VString name, VString data -> Hashtbl.replace (ccom()).resources name data; VNull
 			| _ -> error()
 		);
 		"local_type", Fun0 (fun() ->
@@ -1941,6 +1947,15 @@ let macro_lib =
 		"define_type", Fun1 (fun v ->
 			(get_ctx()).curapi.define_type v;
 			VNull
+		);
+		"add_class_path", Fun1 (fun v ->
+			match v with
+			| VString cp ->
+				let com = ccom() in
+				com.class_path <- cp :: com.class_path;
+				VNull
+			| _ ->
+				error()
 		);
 	]
 
@@ -2161,6 +2176,7 @@ let rec eval ctx (e,p) =
 			let vthis = ctx.vthis in
 			let venv = ctx.venv in
 			let stack = ctx.callstack in
+			let csize = ctx.callsize in
 			let size = DynArray.length ctx.stack in
 			try
 				pop_ret ctx e n1
@@ -2173,6 +2189,7 @@ let rec eval ctx (e,p) =
 				in
 				ctx.exc <- loop (List.length stack) (List.rev ctx.callstack);
 				ctx.callstack <- stack;
+				ctx.callsize <- csize;
 				ctx.vthis <- vthis;
 				ctx.venv <- venv;
 				pop ctx (DynArray.length ctx.stack - size);
@@ -2621,9 +2638,12 @@ and call ctx vthis vfun pl p =
 	let oldthis = ctx.vthis in
 	let stackpos = DynArray.length ctx.stack in
 	let oldstack = ctx.callstack in
+	let oldsize = ctx.callsize in
 	let oldenv = ctx.venv in
 	ctx.vthis <- vthis;
 	ctx.callstack <- { cpos = p; cthis = oldthis; cstack = stackpos; cenv = oldenv } :: ctx.callstack;
+	ctx.callsize <- oldsize + 1;
+	if oldsize > 200 then exc (VString "Stack overflow");
 	let ret = (try
 		(match vfun with
 		| VClosure (vl,f) ->
@@ -2643,12 +2663,14 @@ and call ctx vthis vfun pl p =
 		| _ ->
 			exc (VString "Invalid call"))
 	with Return v -> v
+		| Stack_overflow -> exc (VString "Compiler Stack overflow")
 		| Sys_error msg | Failure msg -> exc (VString msg)
 		| Unix.Unix_error (_,cmd,msg) -> exc (VString ("Error " ^ cmd ^ " " ^ msg))
 		| Builtin_error | Invalid_argument _ -> exc (VString "Invalid call")) in
 	ctx.vthis <- oldthis;
 	ctx.venv <- oldenv;
 	ctx.callstack <- oldstack;
+	ctx.callsize <- oldsize;
 	pop ctx (DynArray.length ctx.stack - stackpos);
 	ret
 
@@ -2664,7 +2686,10 @@ let rec to_string ctx n v =
 	| VBool true -> "true"
 	| VBool false -> "false"
 	| VInt i -> string_of_int i
-	| VFloat f -> string_of_float f
+	| VFloat f ->
+		let s = string_of_float f in
+		let len = String.length s in
+		if String.unsafe_get s (len - 1) = '.' then String.sub s 0 (len - 1) else s
 	| VString s -> s
 	| VArray vl -> "[" ^ String.concat "," (Array.to_list (Array.map (to_string ctx n) vl)) ^ "]"
 	| VAbstract a ->
@@ -2771,6 +2796,7 @@ let create com api =
 		globals = PMap.empty;
 		(* runtime *)
 		callstack = [];
+		callsize = 0;
 		stack = DynArray.create();
 		exc = [];
 		vthis = VNull;
@@ -3176,6 +3202,11 @@ let opt f v =
 	| VNull -> None
 	| _ -> Some (f v)
 
+let opt_list f v =
+	match v with
+	| VNull -> []
+	| _ -> f v
+
 let decode_pos = function
 	| VAbstract (APos p) -> p
 	| _ -> raise Invalid_expr
@@ -3307,8 +3338,8 @@ and decode_field v =
 		cff_doc = opt dec_string (field v "doc");
 		cff_pos = decode_pos (field v "pos");
 		cff_kind = fkind;
-		cff_access = List.map decode_access (dec_array (field v "access"));
-		cff_meta = decode_meta_content (field v "meta");
+		cff_access = List.map decode_access (opt_list dec_array (field v "access"));
+		cff_meta = opt_list decode_meta_content (field v "meta");
 	}
 
 and decode_ctype t =

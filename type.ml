@@ -181,6 +181,8 @@ and tclass = {
 	mutable cl_constructor : tclass_field option;
 	mutable cl_init : texpr option;
 	mutable cl_overrides : string list;
+
+	mutable cl_restore : unit -> unit;
 }
 
 and tenum_field = {
@@ -225,6 +227,8 @@ and module_type =
 type module_def = {
 	mpath : path;
 	mtypes : module_type list;
+	mfile : string;
+	mdeps : (module_def,unit) PMap.t ref;
 }
 
 let alloc_var =
@@ -271,6 +275,7 @@ let mk_class path pos =
 		cl_constructor = None;
 		cl_init = None;
 		cl_overrides = [];
+		cl_restore = (fun() -> ());
 	}
 
 let null_class =
@@ -564,6 +569,7 @@ type unify_error =
 	| Invalid_visibility of string
 	| Not_matching_optional of string
 	| Cant_force_optional
+	| Invariant_parameter of t * t
 
 exception Unify_error of unify_error list
 
@@ -655,7 +661,7 @@ let rec type_eq param a b =
 		if e1 != e2 && not (param = EqCoreType && e1.e_path = e2.e_path) then error [cannot_unify a b];
 		List.iter2 (type_eq param) tl1 tl2
 	| TInst (c1,tl1) , TInst (c2,tl2) ->
-		if c1 != c2 && not (param = EqCoreType && c1.cl_path = c2.cl_path) then error [cannot_unify a b];
+		if c1 != c2 && not (param = EqCoreType && c1.cl_path = c2.cl_path) && (match c1.cl_kind, c2.cl_kind with KExpr _, KExpr _ -> false | _ -> true) then error [cannot_unify a b];
 		List.iter2 (type_eq param) tl1 tl2
 	| TFun (l1,r1) , TFun (l2,r2) when List.length l1 = List.length l2 ->
 		(try
@@ -740,6 +746,14 @@ let rec raw_class_field build_type c i =
 		loop c.cl_implements
 
 let class_field = raw_class_field field_type
+
+let rec get_constructor build_type c =
+	match c.cl_constructor, c.cl_super with
+	| Some c, _ -> build_type c, c
+	| None, None -> raise Not_found
+	| None, Some (csup,cparams) ->
+		let t, c = get_constructor build_type csup in
+		apply_params csup.cl_types cparams t, c
 
 let rec unify a b =
 	if a == b then
@@ -901,10 +915,13 @@ let rec unify a b =
 		error [cannot_unify a b]
 
 and unify_types a b tl1 tl2 =
-	try
-		List.iter2 (type_eq EqRightDynamic) tl1 tl2
-	with
-		Unify_error l -> error ((cannot_unify a b) :: l)
+	List.iter2 (fun t1 t2 ->
+		try
+			type_eq EqRightDynamic t1 t2 
+		with Unify_error l ->
+			let err = cannot_unify a b in
+			error (try unify t1 t2; (err :: (Invariant_parameter (t1,t2)) :: l) with _ -> err :: l)
+	) tl1 tl2
 
 and unify_with_access t1 f2 =
 	match f2.cf_kind with

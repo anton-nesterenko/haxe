@@ -60,7 +60,7 @@ type context = {
 	mutable package_rules : (string,package_rule) PMap.t;
 	mutable error : string -> pos -> unit;
 	mutable warning : string -> pos -> unit;
-	mutable load_extern_type : (path -> pos -> Ast.package option) list; (* allow finding types which are not in sources *)
+	mutable load_extern_type : (path -> pos -> (string * Ast.package) option) list; (* allow finding types which are not in sources *)
 	mutable filters : (unit -> unit) list;
 	mutable defines_signature : string option;
 	(* output *)
@@ -80,27 +80,9 @@ type context = {
 	mutable basic : basic_types;
 }
 
-type global_cache = {
-	cache_version : int;
-	mutable cache_file : string option;
-	mutable cached_haxelib : (string list, string list) Hashtbl.t;
-	mutable cached_files : (string, float * Ast.package) Hashtbl.t;
-}
-
 exception Abort of string * Ast.pos
 
 let display_default = ref false
-
-let cache_version = 1
-let global_cache : global_cache option ref = ref None
-
-let create_cache() =
-	{
-		cache_version = cache_version;
-		cache_file = None;
-		cached_files = Hashtbl.create 0;
-		cached_haxelib = Hashtbl.create 0;
-	}
 
 let create v =
 	let m = Type.mk_mono() in
@@ -147,7 +129,7 @@ let create v =
 
 let clone com =
 	let t = com.basic in
-	{ com with basic = { t with tvoid = t.tvoid } }
+	{ com with basic = { t with tvoid = t.tvoid }; main_class = None; }
 
 let platforms = [
 	Flash;

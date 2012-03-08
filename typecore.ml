@@ -40,7 +40,6 @@ type typer_globals = {
 	types_module : (path, path) Hashtbl.t;
 	modules : (path , module_def) Hashtbl.t;
 	mutable delayed : (unit -> unit) list;
-	constructs : (path , Ast.access list * Ast.func) Hashtbl.t;
 	doinline : bool;
 	mutable core_api : typer option;
 	mutable macros : ((unit -> unit) * typer) option;
@@ -127,6 +126,8 @@ let unify_error_msg ctx = function
 		"Optional attribute of parameter " ^ n ^ " differs"
 	| Cant_force_optional ->
 		"Optional parameters can't be forced"
+	| Invariant_parameter _ ->
+		"Type parameters are invariant"
 
 let rec error_msg = function
 	| Module_not_found m -> "Class not found : " ^ Ast.s_type_path m

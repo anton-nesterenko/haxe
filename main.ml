@@ -28,6 +28,12 @@ type context = {
 	mutable has_error : bool;
 }
 
+type cache = {
+	mutable c_haxelib : (string list, string list) Hashtbl.t;
+	mutable c_files : (string, float * Ast.package) Hashtbl.t;
+	mutable c_modules : (Type.path * string, float * Type.module_def) Hashtbl.t;
+}
+
 exception Abort
 exception Completion of string
 
@@ -35,7 +41,8 @@ let version = 208
 
 let measure_times = ref false
 let prompt = ref false
-let start_time = get_time()
+let start_time = ref (get_time())
+let global_cache = ref None
 
 let executable_path() =
 	Extc.executable_path()
@@ -57,6 +64,16 @@ let format msg p =
 		let msg = String.concat ("\n" ^ epos ^ " : ") (ExtString.String.nsplit msg "\n") in
 		sprintf "%s : %s" epos msg
 	end
+
+let ssend sock str =
+	let rec loop pos len =
+		if len = 0 then
+			()
+		else
+			let s = Unix.send sock str pos len [] in
+			loop (pos + s) (len - s)
+	in
+	loop 0 (String.length str)
 
 let message ctx msg p =
 	ctx.messages <- format msg p :: ctx.messages
@@ -243,7 +260,7 @@ let add_swf_lib com file =
 	let build cl p =
 		match (try Some (Hashtbl.find (extract()) cl) with Not_found -> None) with
 		| None -> None
-		| Some c -> Some (Genswf.build_class com c file)
+		| Some c -> Some (file, Genswf.build_class com c file)
 	in
 	com.load_extern_type <- com.load_extern_type @ [build];
 	com.swf_libs <- (file,getSWF,extract) :: com.swf_libs
@@ -262,15 +279,15 @@ let add_libs com libs =
 	match libs with
 	| [] -> ()
 	| _ ->
-		let lines = match !Common.global_cache with
+		let lines = match !global_cache with
 			| Some cache ->
 				(try
 					(* if we are compiling, really call haxelib since library path might have changed *)
 					if not com.display then raise Not_found;
-					Hashtbl.find cache.cached_haxelib libs
+					Hashtbl.find cache.c_haxelib libs
 				with Not_found ->
 					let lines = call_haxelib() in
-					Hashtbl.replace cache.cached_haxelib libs lines;
+					Hashtbl.replace cache.c_haxelib libs lines;
 					lines)
 			| _ -> call_haxelib()
 		in
@@ -298,30 +315,6 @@ let create_context params =
 		has_error = false;
 	}
 
-let setup_cache rcom cache =
-	Common.global_cache := Some cache;
-	Typeload.parse_hook := (fun com file p ->
-		let sign = (match com.defines_signature with
-			| Some s -> s
-			| None ->
-				let s = Digest.string (String.concat "@" (PMap.foldi (fun k _ acc -> k :: acc) com.defines [])) in
-				com.defines_signature <- Some s;
-				s
-		) in
-		let ffile = Common.get_full_path file in
-		let ftime = try (Unix.stat ffile).Unix.st_mtime with _ -> 0. in
-		let fkey = ffile ^ "!" ^ sign in
-		try
-			let time, data = Hashtbl.find cache.cached_files fkey in
-			if time <> ftime then raise Not_found;
-			data
-		with Not_found ->
-			let data = Typeload.parse_file com file p in
-			if rcom.verbose && not com.verbose then print_endline ("Parsed " ^ ffile);
-			Hashtbl.replace cache.cached_files fkey (ftime,data);
-			data
-	)
-
 let default_flush ctx =
 	List.iter prerr_endline (List.rev ctx.messages);
 	if ctx.has_error && !prompt then begin
@@ -345,21 +338,115 @@ let rec process_params flush acc = function
 		(* we need to change it immediately since it will affect hxml loading *)
 		(try Unix.chdir dir with _ -> ());
 		process_params flush (dir :: "--cwd" :: acc) l
+	| "--connect" :: hp :: l ->
+		(match !global_cache with
+		| None ->
+			let host, port = (try ExtString.String.split hp ":" with _ -> "127.0.0.1", hp) in
+			do_connect host (try int_of_string port with _ -> raise (Arg.Bad "Invalid port")) ((List.rev acc) @ l)
+		| Some _ ->
+			(* already connected : skip *)
+			process_params flush acc l)
 	| arg :: l ->
 		match List.rev (ExtString.String.nsplit arg ".") with
 		| "hxml" :: _ -> process_params flush acc (parse_hxml arg @ l)
 		| _ -> process_params flush (arg :: acc) l
 
-and wait_loop com host port =
+and wait_loop boot_com host port =
 	let sock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
 	(try Unix.bind sock (Unix.ADDR_INET (Unix.inet_addr_of_string host,port)) with _ -> failwith ("Couldn't wait on " ^ host ^ ":" ^ string_of_int port));
 	Unix.listen sock 10;
 	Sys.catch_break false;
-	let verbose = com.verbose in
+	let verbose = boot_com.verbose in
 	if verbose then print_endline ("Waiting on " ^ host ^ ":" ^ string_of_int port);
 	let bufsize = 1024 in
 	let tmp = String.create bufsize in
-	setup_cache com (Common.create_cache());
+	let cache = {
+		c_haxelib = Hashtbl.create 0;
+		c_files = Hashtbl.create 0;
+		c_modules = Hashtbl.create 0;
+	} in
+	global_cache := Some cache;
+	let get_signature com =
+		match com.defines_signature with
+		| Some s -> s
+		| None ->
+			let s = Digest.string (String.concat "@" (PMap.foldi (fun k _ acc -> if k = "display" then acc else k :: acc) com.defines [])) in
+			com.defines_signature <- Some s;
+			s
+	in
+	let file_time file =
+		try (Unix.stat file).Unix.st_mtime with _ -> 0.
+	in
+	Typeload.parse_hook := (fun com2 file p ->
+		let sign = get_signature com2 in
+		let ffile = Common.get_full_path file in
+		let ftime = file_time ffile in
+		let fkey = ffile ^ "!" ^ sign in
+		try
+			let time, data = Hashtbl.find cache.c_files fkey in
+			if time <> ftime then raise Not_found;
+			data
+		with Not_found ->
+			let data = Typeload.parse_file com2 file p in
+			if verbose then print_endline ("Parsed " ^ ffile);
+			Hashtbl.replace cache.c_files fkey (ftime,data);
+			data
+	);
+	let cache_module sign m =
+		Hashtbl.replace cache.c_modules (m.Type.mpath,sign) (file_time m.Type.mfile,m);
+		List.iter (fun t ->
+			match t with
+			| Type.TClassDecl c -> c.Type.cl_restore()
+			| _ -> ()
+		) m.Type.mtypes
+	in
+	let modules_added = Hashtbl.create 0 in
+	Typeload.type_module_hook := (fun (ctx:Typecore.typer) mpath p ->
+		let com2 = ctx.Typecore.com in
+		let sign = get_signature com2 in
+		let modules_checked = Hashtbl.create 0 in
+		let dep = ref None in
+		let rec check m =
+			try
+				Hashtbl.find modules_added m.Type.mpath
+			with Not_found -> try
+				!(Hashtbl.find modules_checked m.Type.mpath)
+			with Not_found ->
+			let ok = ref true in
+			Hashtbl.add modules_checked m.Type.mpath ok;
+			try
+				let time, m = Hashtbl.find cache.c_modules (m.Type.mpath,sign) in
+				if m.Type.mfile <> Common.get_full_path (Typeload.resolve_module_file com2 m.Type.mpath (ref[]) p) then raise Not_found;
+				if file_time m.Type.mfile <> time then raise Not_found;
+				PMap.iter (fun m2 _ -> if not (check m2) then begin dep := Some m2; raise Not_found end) !(m.Type.mdeps);
+				true
+			with Not_found ->
+				Hashtbl.add modules_added m.Type.mpath false;
+				ok := false;
+				!ok
+		in
+		let rec add_modules m =
+			if Hashtbl.mem modules_added m.Type.mpath then
+				()
+			else begin
+				Hashtbl.add modules_added m.Type.mpath true;
+				if verbose then print_endline ("Reusing  cached module " ^ Ast.s_type_path m.Type.mpath);
+				Typeload.add_module ctx m p;
+				PMap.iter (fun m2 _ -> add_modules m2) !(m.Type.mdeps);
+			end
+		in
+		try
+			let _, m = Hashtbl.find cache.c_modules (mpath,sign) in
+			if com2.dead_code_elimination then raise Not_found;
+			if not (check m) then begin
+				if verbose then print_endline ("Skipping cached module " ^ Ast.s_type_path mpath ^ (match !dep with None -> "" | Some m -> "(" ^ Ast.s_type_path m.Type.mpath ^ ")"));
+				raise Not_found;
+			end;
+			add_modules m;
+			Some m
+		with Not_found ->
+			None
+	);
 	while true do
 		let sin, _ = Unix.accept sock in
 		let t0 = get_time() in
@@ -377,18 +464,13 @@ and wait_loop com host port =
 				ignore(Unix.select [] [] [] 0.1);
 				read_loop()
 		in
-		let send str =
-			let rec loop pos len =
-				if len = 0 then
-					()
-				else
-					let s = Unix.send sin str pos len [] in
-					loop (pos + s) (len - s)
-			in
-			loop 0 (String.length str)
-		in
 		let flush ctx =
-			List.iter (fun s -> send (s ^ "\n")) (List.rev ctx.messages)
+			Hashtbl.clear modules_added;
+			if not ctx.com.dead_code_elimination then begin
+				List.iter (cache_module (get_signature ctx.com)) ctx.com.modules;
+				if verbose then print_endline ("Cached " ^ string_of_int (List.length ctx.com.modules) ^ " modules");
+			end;
+			List.iter (fun s -> ssend sin (s ^ "\n")) (List.rev ctx.messages);
 		in
 		(try
 			let data = parse_hxml_data (read_loop()) in
@@ -397,10 +479,15 @@ and wait_loop com host port =
 			(try
 				Common.display_default := false;
 				Parser.resume_display := Ast.null_pos;
+				measure_times := false;
+				Hashtbl.clear Common.htimers;
+				let _ = Common.timer "other" in
+				Hashtbl.clear modules_added;
+				start_time := get_time();
 				process_params flush [] data
 			with Completion str ->
 				if verbose then print_endline ("Completion Response =\n" ^ str);
-				send str
+				ssend sin str
 			);
 			if verbose then Printf.printf "Time spent : %.3fs\n" (get_time() -. t0);
 		with Unix.Unix_error _ ->
@@ -408,6 +495,22 @@ and wait_loop com host port =
 		if verbose then print_endline "Closing connection";
 		Unix.close sin;
 	done
+
+and do_connect host port args =
+	let sock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+	(try Unix.connect sock (Unix.ADDR_INET (Unix.inet_addr_of_string host,port)) with _ -> failwith ("Couldn't connect on " ^ host ^ ":" ^ string_of_int port));
+	ssend sock ("--cwd " ^ Unix.getcwd() ^ "\n");
+	List.iter (fun p -> ssend sock (p ^ "\n")) args;
+	ssend sock "\000";
+	let buf = Buffer.create 0 in
+	let tmp = String.create 100 in
+	let rec loop() =
+		let b = Unix.recv sock tmp 0 100 [] in
+		Buffer.add_substring buf tmp 0 b;
+		if b > 0 then loop()
+	in
+	loop();
+	prerr_endline (Buffer.contents buf)
 
 and init flush ctx =
 	let usage = Printf.sprintf
@@ -632,30 +735,14 @@ try
 		)," : call the given macro before typing anything else");
 		("--dead-code-elimination", Arg.Unit (fun () ->
 			com.dead_code_elimination <- true;
-			Common.add_filter com (fun() -> Optimizer.filter_dead_code com);
 		)," : remove unused methods");
-		("--cache", Arg.String (fun cache ->
-			match !Common.global_cache with
-			| Some _ ->
-				raise (Arg.Bad "Cache already defined")
-			| _ ->
-				let file = try Common.find_file com cache with Not_found -> cache in
-				let data = try
-					let ch = open_in_bin file in
-					let data = Marshal.from_channel ch in
-					close_in ch;
-					if data.cache_version <> Common.cache_version then raise Exit;
-					data
-				with _ ->
-					Common.create_cache()
-				in
-				data.cache_file <- Some file;
-				setup_cache com data
-		),"<file> : use the cache file to speedup compilation");
 		("--wait", Arg.String (fun hp ->
 			let host, port = (try ExtString.String.split hp ":" with _ -> "127.0.0.1", hp) in
 			wait_loop com host (try int_of_string port with _ -> raise (Arg.Bad "Invalid port"))
 		),"<[host:]port> : wait on the given port for commands to run)");
+		("--connect",Arg.String (fun _ ->
+			assert false
+		),"<[host:]port> : connect on the given port and run commands there)");
 		("--cwd", Arg.String (fun dir ->
 			(try Unix.chdir dir with _ -> raise (Arg.Bad "Invalid directory"))
 		),"<dir> : set current working directory");
@@ -730,7 +817,7 @@ try
 		t();
 		if ctx.has_error then raise Abort;
 		let t = Common.timer "filters" in
-		let main, types, modules = Typer.generate tctx com.main_class in
+		let main, types, modules = Typer.generate tctx in
 		com.main <- main;
 		com.types <- types;
 		com.modules <- modules;
@@ -826,7 +913,7 @@ with
 			loop();
 			let tot = ref 0. in
 			Hashtbl.iter (fun _ t -> tot := !tot +. t.total) Common.htimers;
-			let fields = ("@TOTAL", Printf.sprintf "%.3fs" (get_time() -. start_time), "") :: fields in
+			let fields = ("@TOTAL", Printf.sprintf "%.3fs" (get_time() -. !start_time), "") :: fields in
 			Hashtbl.fold (fun _ t acc ->
 				("@TIME " ^ t.name, Printf.sprintf "%.3fs (%.0f%%)" t.total (t.total *. 100. /. !tot), "") :: acc
 			) Common.htimers fields;
@@ -866,12 +953,6 @@ let all = Common.timer "other" in
 Sys.catch_break true;
 (try
 	process_params default_flush [] (List.tl (Array.to_list Sys.argv));
-	(match !Common.global_cache with
-	| Some ({ cache_file = Some file } as cache) ->
-		let ch = open_out_bin file in
-		Marshal.to_channel ch cache [];
-		close_out ch
-	| _ -> ())
 with Completion c ->
 	prerr_endline c;
 	exit 0
