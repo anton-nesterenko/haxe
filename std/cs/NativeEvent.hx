@@ -28,9 +28,15 @@ package cs;
 @:final 
 extern class NativeEvent<T> {
 
-	public function addHandler( handler : Dynamic->T->Void ) : Void;
+	public inline function addHandler( handler : Dynamic->T->Void ) : Void {
+		untyped this += handler;
+	}
 	
-	public function removeHandler( handler : Dynamic->T->Void ) : Void;
+	public inline function removeHandler( handler : Dynamic->T->Void ) : Void {
+		untyped this -= handler;
+	}
 	
-	public function raiseEvent( sender : Dynamic, args : T ) : Void;	
+	public inline function raiseEvent( sender : Dynamic, args : T ) : Void {
+		untyped { var handler = this; if (handler != null) { handler(sender, args); } }
+	}
 }
